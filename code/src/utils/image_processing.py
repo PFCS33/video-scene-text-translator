@@ -31,6 +31,46 @@ def compute_contrast(image: np.ndarray) -> float:
     return float(np.clip(std / mean, 0, 1))
 
 
+def compute_contrast_otsu(image: np.ndarray) -> float:
+    """Compute contrast via Otsu's interclass variance, normalized to [0, 1].
+
+    Otsu's method finds the threshold that maximizes the between-class variance
+    of foreground and background pixel intensities. This directly measures how
+    well-separated text is from its background — aligned with STRIVE's approach.
+
+    The interclass variance is normalized by dividing by the maximum possible
+    variance (occurs when pixels are split between 0 and 255).
+
+    Returns:
+        Score in [0, 1], where higher = better text/background separation.
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
+
+    if gray.size == 0:
+        return 0.0
+
+    threshold, _ = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # Compute interclass variance at the Otsu threshold
+    fg = gray[gray > threshold]
+    bg = gray[gray <= threshold]
+
+    if fg.size == 0 or bg.size == 0:
+        return 0.0
+
+    w_fg = fg.size / gray.size
+    w_bg = bg.size / gray.size
+    mean_fg = fg.mean()
+    mean_bg = bg.mean()
+
+    interclass_variance = w_fg * w_bg * (mean_fg - mean_bg) ** 2
+
+    # Maximum possible interclass variance: when pixels are split 50/50
+    # between 0 and 255 → 0.25 * 255^2 = 16256.25
+    max_variance = 0.25 * 255.0 ** 2
+    return float(np.clip(interclass_variance / max_variance, 0, 1))
+
+
 def match_histogram_luminance(
     source: np.ndarray,
     reference: np.ndarray,

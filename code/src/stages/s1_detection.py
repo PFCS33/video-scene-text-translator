@@ -14,8 +14,11 @@ import numpy as np
 
 from src.config import PipelineConfig
 from src.data_types import BBox, Quad, TextDetection, TextTrack
-from src.utils.geometry import quad_frontality_score
-from src.utils.image_processing import compute_contrast, compute_sharpness
+from src.utils.geometry import quad_bbox_area_ratio, quad_frontality_score
+from src.utils.image_processing import (
+    compute_contrast_otsu,
+    compute_sharpness,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +75,8 @@ class DetectionStage:
                 text=text.strip(),
                 ocr_confidence=confidence,
                 sharpness_score=compute_sharpness(roi),
-                contrast_score=compute_contrast(roi),
-                frontality_score=quad_frontality_score(quad),
+                contrast_score=compute_contrast_otsu(roi),
+                frontality_score=quad_bbox_area_ratio(quad),
             )
             detection.composite_score = self._compute_composite_score(detection)
             detections.append(detection)
@@ -167,14 +170,56 @@ class DetectionStage:
     def select_reference_frames(
         self, tracks: list[TextTrack]
     ) -> list[TextTrack]:
-        """For each track, pick the frame with the highest composite score."""
+        """Select reference frame per track using STRIVE-aligned criteria.
+
+        Pipeline (hard pre-filters, then 2-metric composite):
+        1. Filter: OCR confidence >= ref_ocr_min_confidence
+        2. Filter: Keep top-K by sharpness (ref_sharpness_top_k)
+        3. Score: 0.7 * contrast (Otsu) + 0.3 * frontality (bbox area ratio)
+        4. Select frame with highest composite score
+
+        If all candidates are filtered out, falls back to highest
+        composite_score among all detections.
+        """
         for track in tracks:
             if not track.detections:
                 continue
+
+            candidates = list(track.detections.items())
+
+            # Hard filter 1: OCR confidence
+            ocr_min = self.config.ref_ocr_min_confidence
+            filtered = [
+                (idx, det) for idx, det in candidates
+                if det.ocr_confidence >= ocr_min
+            ]
+
+            # Hard filter 2: Top-K sharpness
+            if filtered:
+                top_k = self.config.ref_sharpness_top_k
+                if len(filtered) > top_k:
+                    filtered.sort(key=lambda x: x[1].sharpness_score, reverse=True)
+                    filtered = filtered[:top_k]
+
+            # Fallback: if all candidates were filtered out, use all detections
+            if not filtered:
+                logger.debug(
+                    "Track %d: no candidates passed pre-filters, falling back",
+                    track.track_id,
+                )
+                filtered = candidates
+
+            # 2-metric composite: 0.7 contrast + 0.3 frontality
+            w_contrast = self.config.ref_weight_contrast
+            w_frontality = self.config.ref_weight_frontality
             best_idx = max(
-                track.detections.keys(),
-                key=lambda idx: track.detections[idx].composite_score,
-            )
+                filtered,
+                key=lambda x: (
+                    w_contrast * x[1].contrast_score
+                    + w_frontality * x[1].frontality_score
+                ),
+            )[0]
+
             track.reference_frame_idx = best_idx
             track.reference_quad = track.detections[best_idx].quad
         return tracks

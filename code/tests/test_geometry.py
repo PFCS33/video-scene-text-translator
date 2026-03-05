@@ -4,7 +4,13 @@ import numpy as np
 import pytest
 
 from src.data_types import Quad
-from src.utils.geometry import compute_homography, quad_frontality_score, warp_points
+from src.utils.geometry import (
+    compute_homography,
+    quad_area,
+    quad_bbox_area_ratio,
+    quad_frontality_score,
+    warp_points,
+)
 
 
 class TestComputeHomography:
@@ -65,6 +71,58 @@ class TestQuadFrontalityScore:
     def test_score_in_range(self, rect_quad):
         score = quad_frontality_score(rect_quad)
         assert 0 <= score <= 1
+
+
+class TestQuadArea:
+    def test_rectangle(self):
+        """100x50 rectangle should have area 5000."""
+        quad = Quad(points=np.array([
+            [0, 0], [100, 0], [100, 50], [0, 50]
+        ], dtype=np.float32))
+        assert quad_area(quad) == pytest.approx(5000.0, abs=0.1)
+
+    def test_unit_square(self):
+        quad = Quad(points=np.array([
+            [0, 0], [1, 0], [1, 1], [0, 1]
+        ], dtype=np.float32))
+        assert quad_area(quad) == pytest.approx(1.0, abs=0.01)
+
+    def test_degenerate_line(self):
+        """Collinear points should have zero area."""
+        quad = Quad(points=np.array([
+            [0, 0], [10, 0], [20, 0], [30, 0]
+        ], dtype=np.float32))
+        assert quad_area(quad) == pytest.approx(0.0, abs=0.01)
+
+
+class TestQuadBboxAreaRatio:
+    def test_perfect_rectangle_ratio_one(self):
+        """A perfect axis-aligned rectangle fills its bbox completely."""
+        quad = Quad(points=np.array([
+            [0, 0], [200, 0], [200, 50], [0, 50]
+        ], dtype=np.float32))
+        ratio = quad_bbox_area_ratio(quad)
+        assert ratio == pytest.approx(1.0, abs=0.01)
+
+    def test_trapezoid_less_than_one(self, trapezoid_quad):
+        ratio = quad_bbox_area_ratio(trapezoid_quad)
+        assert 0.0 < ratio < 1.0
+
+    def test_rectangle_higher_than_trapezoid(self, trapezoid_quad):
+        rect = Quad(points=np.array([
+            [200, 150], [440, 150], [440, 250], [200, 250]
+        ], dtype=np.float32))
+        assert quad_bbox_area_ratio(rect) > quad_bbox_area_ratio(trapezoid_quad)
+
+    def test_score_in_range(self, rect_quad):
+        ratio = quad_bbox_area_ratio(rect_quad)
+        assert 0 <= ratio <= 1
+
+    def test_degenerate_quad(self):
+        """Zero-area quad should return 0."""
+        quad = Quad(points=np.zeros((4, 2), dtype=np.float32))
+        ratio = quad_bbox_area_ratio(quad)
+        assert ratio == 0.0
 
 
 class TestWarpPoints:

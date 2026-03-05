@@ -32,7 +32,7 @@ class TestPipelineConfig:
         errors = default_config.validate()
         assert errors == []
 
-    def test_validate_bad_weights(self):
+    def test_validate_bad_detection_weights(self):
         config = PipelineConfig()
         config.input_video = "in.mp4"
         config.output_video = "out.mp4"
@@ -41,7 +41,31 @@ class TestPipelineConfig:
         config.detection.weight_contrast = 0.5
         config.detection.weight_frontality = 0.5
         errors = config.validate()
-        assert any("weights must sum to 1.0" in e for e in errors)
+        assert any("Detection scoring weights must sum to 1.0" in e for e in errors)
+
+    def test_validate_bad_ref_weights(self):
+        config = PipelineConfig()
+        config.input_video = "in.mp4"
+        config.output_video = "out.mp4"
+        config.detection.ref_weight_contrast = 0.5
+        config.detection.ref_weight_frontality = 0.8
+        errors = config.validate()
+        assert any("Reference selection weights must sum to 1.0" in e for e in errors)
+
+    def test_validate_bad_ref_sharpness_top_k(self):
+        config = PipelineConfig()
+        config.input_video = "in.mp4"
+        config.output_video = "out.mp4"
+        config.detection.ref_sharpness_top_k = 0
+        errors = config.validate()
+        assert any("ref_sharpness_top_k" in e for e in errors)
+
+    def test_default_ref_selection_values(self):
+        config = PipelineConfig()
+        assert config.detection.ref_ocr_min_confidence == 0.7
+        assert config.detection.ref_sharpness_top_k == 10
+        assert config.detection.ref_weight_contrast == 0.7
+        assert config.detection.ref_weight_frontality == 0.3
 
     def test_validate_bad_confidence(self):
         config = PipelineConfig()

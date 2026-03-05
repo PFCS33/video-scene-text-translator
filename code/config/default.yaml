@@ -10,10 +10,17 @@ detection:
   ocr_languages: ["en"]
   ocr_confidence_threshold: 0.3
   min_text_area: 100
+  # Per-detection composite scoring weights (must sum to 1.0)
   weight_ocr_confidence: 0.3
   weight_sharpness: 0.3
   weight_contrast: 0.2
   weight_frontality: 0.2
+  # Reference frame selection: hard pre-filters (STRIVE-aligned)
+  ref_ocr_min_confidence: 0.7
+  ref_sharpness_top_k: 10
+  # Reference frame selection: 2-metric composite weights
+  ref_weight_contrast: 0.7    # Otsu interclass variance
+  ref_weight_frontality: 0.3  # bbox area ratio
   frame_sample_rate: 1
 
 translation:

@@ -107,20 +107,27 @@ class TestGroupDetections:
 
 
 class TestSelectReferenceFrames:
-    def test_selects_highest_score(self, default_config):
-        stage = DetectionStage(default_config)
+    def _make_det(self, frame_idx, ocr_conf=0.9, sharpness=0.5,
+                  contrast=0.5, frontality=0.9):
+        """Helper to create a detection with controllable scores."""
         quad = Quad(points=np.array([
             [0, 0], [100, 0], [100, 50], [0, 50]
         ], dtype=np.float32))
+        return TextDetection(
+            frame_idx=frame_idx, quad=quad, bbox=quad.to_bbox(),
+            text="A", ocr_confidence=ocr_conf,
+            sharpness_score=sharpness,
+            contrast_score=contrast,
+            frontality_score=frontality,
+            composite_score=0.5,
+        )
 
-        det_low = TextDetection(
-            frame_idx=0, quad=quad, bbox=quad.to_bbox(),
-            text="A", ocr_confidence=0.5, composite_score=0.3,
-        )
-        det_high = TextDetection(
-            frame_idx=5, quad=quad, bbox=quad.to_bbox(),
-            text="A", ocr_confidence=0.95, composite_score=0.9,
-        )
+    def test_selects_by_contrast_and_frontality(self, default_config):
+        """After pre-filters, should pick highest 0.7*contrast + 0.3*frontality."""
+        stage = DetectionStage(default_config)
+        # Both pass OCR filter (>= 0.7 default)
+        det_low = self._make_det(0, ocr_conf=0.8, contrast=0.3, frontality=0.5)
+        det_high = self._make_det(5, ocr_conf=0.9, contrast=0.9, frontality=0.8)
         track = TextTrack(
             track_id=0, source_text="A", target_text="B",
             source_lang="en", target_lang="es",
@@ -128,3 +135,63 @@ class TestSelectReferenceFrames:
         )
         result = stage.select_reference_frames([track])
         assert result[0].reference_frame_idx == 5
+
+    def test_ocr_filter_excludes_low_confidence(self, default_config):
+        """Detection below ref_ocr_min_confidence should be skipped."""
+        stage = DetectionStage(default_config)
+        # det at frame 0: high contrast but low OCR (filtered out)
+        det_bad_ocr = self._make_det(0, ocr_conf=0.3, contrast=0.95, frontality=0.95)
+        # det at frame 5: lower contrast but passes OCR filter
+        det_ok_ocr = self._make_det(5, ocr_conf=0.8, contrast=0.5, frontality=0.5)
+        track = TextTrack(
+            track_id=0, source_text="A", target_text="B",
+            source_lang="en", target_lang="es",
+            detections={0: det_bad_ocr, 5: det_ok_ocr},
+        )
+        result = stage.select_reference_frames([track])
+        assert result[0].reference_frame_idx == 5
+
+    def test_sharpness_top_k_filter(self, default_config):
+        """Only top-K sharpest candidates should remain for scoring."""
+        default_config.detection.ref_sharpness_top_k = 2
+        stage = DetectionStage(default_config)
+        # 3 detections all pass OCR, but only top-2 sharpness kept
+        det_a = self._make_det(0, ocr_conf=0.9, sharpness=0.9, contrast=0.2, frontality=0.2)
+        det_b = self._make_det(1, ocr_conf=0.9, sharpness=0.1, contrast=0.99, frontality=0.99)
+        det_c = self._make_det(2, ocr_conf=0.9, sharpness=0.8, contrast=0.5, frontality=0.5)
+        track = TextTrack(
+            track_id=0, source_text="A", target_text="B",
+            source_lang="en", target_lang="es",
+            detections={0: det_a, 1: det_b, 2: det_c},
+        )
+        result = stage.select_reference_frames([track])
+        # det_b has highest contrast/frontality but lowest sharpness → filtered
+        # Between det_a (0.7*0.2 + 0.3*0.2 = 0.20) and det_c (0.7*0.5 + 0.3*0.5 = 0.50)
+        assert result[0].reference_frame_idx == 2
+
+    def test_fallback_when_all_filtered(self, default_config):
+        """When no candidates pass pre-filters, fall back to all detections."""
+        default_config.detection.ref_ocr_min_confidence = 0.99
+        stage = DetectionStage(default_config)
+        # No detection meets 0.99 OCR threshold
+        det_a = self._make_det(0, ocr_conf=0.5, contrast=0.3, frontality=0.3)
+        det_b = self._make_det(1, ocr_conf=0.6, contrast=0.8, frontality=0.8)
+        track = TextTrack(
+            track_id=0, source_text="A", target_text="B",
+            source_lang="en", target_lang="es",
+            detections={0: det_a, 1: det_b},
+        )
+        result = stage.select_reference_frames([track])
+        # Falls back to all, det_b has higher contrast+frontality
+        assert result[0].reference_frame_idx == 1
+
+    def test_empty_detections_skipped(self, default_config):
+        """Track with no detections should be left unchanged."""
+        stage = DetectionStage(default_config)
+        track = TextTrack(
+            track_id=0, source_text="A", target_text="B",
+            source_lang="en", target_lang="es",
+            detections={},
+        )
+        result = stage.select_reference_frames([track])
+        assert result[0].reference_frame_idx == -1

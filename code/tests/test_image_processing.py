@@ -6,6 +6,7 @@ import pytest
 
 from src.utils.image_processing import (
     compute_contrast,
+    compute_contrast_otsu,
     compute_sharpness,
     match_histogram_luminance,
 )
@@ -54,6 +55,45 @@ class TestComputeContrast:
     def test_score_in_range(self, synthetic_frame):
         score = compute_contrast(synthetic_frame)
         assert 0 <= score <= 1
+
+
+class TestComputeContrastOtsu:
+    def test_high_contrast_bimodal(self):
+        """An image with two distinct intensity groups should score high."""
+        img = np.zeros((100, 100), dtype=np.uint8)
+        img[:50, :] = 255  # top half white, bottom half black
+        score = compute_contrast_otsu(img)
+        assert score > 0.5
+
+    def test_uniform_low_contrast(self):
+        """A uniform image has no foreground/background separation."""
+        img = np.full((50, 50, 3), 128, dtype=np.uint8)
+        score = compute_contrast_otsu(img)
+        assert score < 0.1
+
+    def test_black_image(self):
+        """All-zero image should return 0."""
+        img = np.zeros((50, 50, 3), dtype=np.uint8)
+        score = compute_contrast_otsu(img)
+        assert score == 0.0
+
+    def test_score_in_range(self, synthetic_frame):
+        score = compute_contrast_otsu(synthetic_frame)
+        assert 0 <= score <= 1
+
+    def test_text_on_background_higher_than_uniform(self):
+        """Text ROI (dark on light) should score higher than uniform gray."""
+        # Simulate text: dark letters on white background
+        text_roi = np.full((50, 100, 3), 240, dtype=np.uint8)
+        cv2.putText(text_roi, "AB", (10, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (20, 20, 20), 2)
+        uniform = np.full((50, 100, 3), 128, dtype=np.uint8)
+        assert compute_contrast_otsu(text_roi) > compute_contrast_otsu(uniform)
+
+    def test_empty_image(self):
+        img = np.zeros((0, 0), dtype=np.uint8)
+        score = compute_contrast_otsu(img)
+        assert score == 0.0
 
 
 class TestMatchHistogramLuminance:

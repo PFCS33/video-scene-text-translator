@@ -84,6 +84,39 @@ def quad_frontality_score(quad: Quad) -> float:
     return float(np.clip(0.6 * side_score + 0.4 * angle_score, 0, 1))
 
 
+def quad_area(quad: Quad) -> float:
+    """Compute the area of a quad using the Shoelace formula.
+
+    Works for any simple (non-self-intersecting) polygon.
+    """
+    pts = quad.points
+    n = len(pts)
+    area = 0.0
+    for i in range(n):
+        j = (i + 1) % n
+        area += pts[i, 0] * pts[j, 1]
+        area -= pts[j, 0] * pts[i, 1]
+    return abs(area) / 2.0
+
+
+def quad_bbox_area_ratio(quad: Quad) -> float:
+    """Compute frontality as the ratio of quad area to its bounding box area.
+
+    A perfectly frontal (rectangular) quad fills its bounding box completely,
+    giving a ratio of 1.0. A skewed/perspective quad has a smaller ratio.
+    This aligns with STRIVE's frontality metric.
+
+    Returns:
+        Score in [0, 1], where 1.0 = perfectly rectangular/frontal.
+    """
+    q_area = quad_area(quad)
+    bbox = quad.to_bbox()
+    bbox_area = bbox.area()
+    if bbox_area < 1:
+        return 0.0
+    return float(np.clip(q_area / bbox_area, 0, 1))
+
+
 def warp_points(points: np.ndarray, H: np.ndarray) -> np.ndarray:
     """Apply homography H to a set of 2D points.
 

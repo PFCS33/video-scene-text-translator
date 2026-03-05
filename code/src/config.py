@@ -17,11 +17,17 @@ class DetectionConfig:
     ocr_languages: list[str] = field(default_factory=lambda: ["en"])
     ocr_confidence_threshold: float = 0.3
     min_text_area: int = 100
-    # Reference frame scoring weights (must sum to 1.0)
+    # Per-detection composite scoring weights (must sum to 1.0)
     weight_ocr_confidence: float = 0.3
     weight_sharpness: float = 0.3
     weight_contrast: float = 0.2
     weight_frontality: float = 0.2
+    # Reference frame selection: hard pre-filters (STRIVE-aligned)
+    ref_ocr_min_confidence: float = 0.7
+    ref_sharpness_top_k: int = 10
+    # Reference frame selection: 2-metric composite weights
+    ref_weight_contrast: float = 0.7   # Otsu interclass variance
+    ref_weight_frontality: float = 0.3  # bbox area ratio
     # Process every N-th frame for detection (1 = every frame)
     frame_sample_rate: int = 1
 
@@ -115,16 +121,26 @@ class PipelineConfig:
             errors.append("output_video is required")
         if not (0 <= self.detection.ocr_confidence_threshold <= 1):
             errors.append("ocr_confidence_threshold must be in [0, 1]")
-        weights = [
+        det_weights = [
             self.detection.weight_ocr_confidence,
             self.detection.weight_sharpness,
             self.detection.weight_contrast,
             self.detection.weight_frontality,
         ]
-        if abs(sum(weights) - 1.0) > 0.01:
+        if abs(sum(det_weights) - 1.0) > 0.01:
             errors.append(
-                f"Reference scoring weights must sum to 1.0, got {sum(weights):.2f}"
+                f"Detection scoring weights must sum to 1.0, got {sum(det_weights):.2f}"
             )
+        ref_weights = [
+            self.detection.ref_weight_contrast,
+            self.detection.ref_weight_frontality,
+        ]
+        if abs(sum(ref_weights) - 1.0) > 0.01:
+            errors.append(
+                f"Reference selection weights must sum to 1.0, got {sum(ref_weights):.2f}"
+            )
+        if self.detection.ref_sharpness_top_k < 1:
+            errors.append("ref_sharpness_top_k must be >= 1")
         if self.detection.frame_sample_rate < 1:
             errors.append("frame_sample_rate must be >= 1")
         return errors
