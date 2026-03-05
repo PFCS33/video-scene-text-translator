@@ -1,0 +1,10 @@
+numpy>=1.24.0
+opencv-python>=4.8.0
+easyocr>=1.7.0
+googletrans==4.0.0-rc1
+PyYAML>=6.0
+Pillow>=10.0.0
+
+# Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0

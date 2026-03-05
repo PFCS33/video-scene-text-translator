@@ -1,0 +1,52 @@
+# Default pipeline configuration
+# Override per-run via CLI flags or a custom YAML file
+
+input_video: ""
+output_video: ""
+log_level: "INFO"
+debug_output_dir: null
+
+detection:
+  ocr_languages: ["en"]
+  ocr_confidence_threshold: 0.3
+  min_text_area: 100
+  weight_ocr_confidence: 0.3
+  weight_sharpness: 0.3
+  weight_contrast: 0.2
+  weight_frontality: 0.2
+  frame_sample_rate: 1
+
+translation:
+  source_lang: "en"
+  target_lang: "es"
+  backend: "googletrans"
+  api_key: null
+
+frontalization:
+  optical_flow_method: "farneback"
+  farneback_pyr_scale: 0.5
+  farneback_levels: 3
+  farneback_winsize: 15
+  farneback_iterations: 3
+  farneback_poly_n: 5
+  farneback_poly_sigma: 1.2
+  lk_win_size: [21, 21]
+  lk_max_level: 3
+  homography_method: "RANSAC"
+  ransac_reproj_threshold: 5.0
+  min_inliers: 4
+
+propagation:
+  color_space: "YCrCb"
+  histogram_bins: 256
+  clip_limit: 2.0
+  blend_blur_kernel: 5
+
+revert:
+  blend_border_size: 3
+  blend_method: "gaussian"
+
+text_editor:
+  backend: "placeholder"
+  model_path: null
+  device: "cpu"
