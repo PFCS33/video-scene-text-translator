@@ -1,97 +1,81 @@
 # Cross-Language Scene Text Replacement in Video
+CMPT 743 Visual Computing Lab II final project (SFU). Replace scene text in video frames across languages, preserving font style, perspective, and lighting consistency. Team: Hebin Yao, Yunshan Feng, Liliana Lopez.
 
-CMPT 743 Visual Computing Lab II final project (SFU). Team: Hebin Yao, Yunshan Feng, Liliana Lopez.
+## Workflow
 
-## Project Goal
+### Session
+1. At session start, run /load-context to load context from the previous session.
+   Older session history is in docs/sessions/ — read when you need context beyond the last session.
+2. At session end when I ask, run /session-summary to archive the session.
 
-Replace scene text in video frames across languages (e.g., English "DANGER" → Spanish "PELIGRO") automatically, preserving font style, perspective, and lighting consistency across frames.
+### Development
+When starting a new feature:
+1. Create a feature branch: feat/, fix/, chore/
+2. Run /architect if the project has no docs/architecture.md yet.
+3. Run /plan to brainstorm and write plan.md for this feature. Wait for approval.
+   If plan.md already exists for this feature, load it and continue from where it left off.
+4. If a design decision needs research, delegate to @researcher.
 
-## Project Structure
+When implementing:
+5. For scoped module work, delegate to @coder with the specific plan step.
+6. If @coder reports unresolved test failures, delegate to @debugger with the error output.
+7. After completing each plan step, mark it as [x] in plan.md Progress and note any changes.
 
-```
-vc_final/
-├── _refs/
-│   ├── pipeline.png          # Pipeline architecture diagram (5 stages)
-│   └── report.pdf            # Milestone presentation (11 pages)
-├── code/                     # Stage B pipeline implementation
-│   ├── config/default.yaml
-│   ├── src/
-│   │   ├── pipeline.py       # Orchestrator: wires S1→S5
-│   │   ├── data_types.py     # Core dataclasses (BBox, Quad, TextTrack, etc.)
-│   │   ├── config.py         # YAML config loading + validation
-│   │   ├── video_io.py       # VideoReader / VideoWriter
-│   │   ├── stages/
-│   │   │   ├── s1_detection.py      # EasyOCR + translation + reference selection
-│   │   │   ├── s2_frontalization.py # Optical flow + homography
-│   │   │   ├── s3_text_editing.py   # Stage A model wrapper
-│   │   │   ├── s4_propagation.py    # Histogram matching
-│   │   │   └── s5_revert.py        # Inverse homography + alpha compositing
-│   │   ├── models/
-│   │   │   ├── base_text_editor.py  # ABC for Stage A models
-│   │   │   └── placeholder_editor.py
-│   │   └── utils/
-│   │       ├── geometry.py          # Homography, quad metrics
-│   │       ├── image_processing.py  # Sharpness, contrast, histogram matching
-│   │       └── optical_flow.py      # Farneback + Lucas-Kanade
-│   ├── tests/                # 84 tests, all passing
-│   ├── scripts/run_pipeline.py
-│   └── requirements.txt
-└── CLAUDE.md                 # This file
-```
+When wrapping up:
+8. Delegate to @reviewer for code review.
+9. Commit changes — the commit skill will propose atomic splits for approval.
+10. When merging a feature branch to main, check if docs/architecture.md needs updating to reflect what was actually built.
 
-## Implementation Stages
+## Commands
+dev:    python scripts/run_pipeline.py --input <video> --output <out> --source-lang en --target-lang es
+test:   cd code && python -m pytest tests/ -v
+lint:   ruff check code/
+build:  (N/A — not a distributable package)
 
-### Stage A — Cross-Language Text Editing Model (separate work, not in code/)
-- RS-STE: cross-language fine-tuning (main focus, training loop re-implemented)
-- AnyText2: diffusion-based, imported for pipeline integration
-- Stage A models are consumed via `BaseTextEditor` interface in `src/models/`
+## Stack
+- Python 3.11 (conda env: `vc_final`)
+- OpenCV (cv2) — core CV operations, homography, optical flow
+- NumPy — array operations
+- PyYAML — config loading
+- Pillow — image I/O
+- EasyOCR — scene text detection (not yet installed)
+- googletrans 4.0.0-rc1 — translation API (not yet installed)
+- pytest + pytest-cov — testing (105 tests)
+- ruff — linting and formatting
 
-### Stage B — Basic Video Pipeline (IMPLEMENTED in code/)
-Uses classical CV methods. 5 stages:
-1. **S1 Detection**: EasyOCR → detect text → IoU-based tracking → Google Translate → score frames → pick reference
-2. **S2 Frontalization**: Optical flow (Farneback default) → track quads → `cv2.findHomography` per frame
-3. **S3 Text Editing**: Call Stage A model via `BaseTextEditor.edit_text(roi, target_text)` → returns edited ROI
-4. **S4 Propagation**: YCrCb luminance histogram matching → adapt edited ROI to each frame's lighting
-5. **S5 Revert**: Inverse homography warp → alpha blending with feathered edges → composite into frame
+## Key Directories
+- `code/src/` — Pipeline implementation (5 stages)
+- `code/src/stages/` — S1 detection, S2 frontalization, S3 text editing, S4 propagation, S5 revert
+- `code/src/models/` — Stage A model interface (BaseTextEditor ABC) + backends
+- `code/src/utils/` — Geometry, image processing, optical flow utilities
+- `code/config/` — default.yaml (all pipeline parameters)
+- `code/tests/` — 105 unit + integration tests
+- `code/scripts/` — CLI entry point (run_pipeline.py)
+- `_refs/` — Pipeline diagram, milestone report
+- `docs/` — Architecture docs, session summaries
 
-### Stage C — Full STRIVE Pipeline (NOT YET IMPLEMENTED)
-- Replace homography with STTN (Spatial-Temporal Transformer Network)
-- Replace histogram matching with TPM (Temporal Propagation Module)
+## Conventions
+- All configurable values live in `config/default.yaml`, never hardcoded
+- Stages communicate via `TextTrack` dataclass — the central data structure flowing through S1→S5
+- Stage A models implement `BaseTextEditor` ABC — swap backends via `text_editor.backend` in config
+- Lazy initialization for expensive resources (EasyOCR, translator) — never import at module level
+- Detections keyed by `frame_idx` (dict, not list) for O(1) lookup
+- Activate conda before any command: `eval "$(/opt/miniconda3/bin/conda shell.bash hook)" && conda activate vc_final`
+- Domain-specific rules auto-load from .claude/rules/ when working in matching paths
 
-**Frontalization difference (Stage B vs STRIVE):**
-- Stage B does NOT do true frontalization. The reference frame's natural perspective is treated as "frontal". S2 only computes the geometric mapping (H_to_ref / H_from_ref) between frames. The edited ROI is propagated outward from ref via H_from_ref in S5.
-- STRIVE uses STTN to warp every frame's ROI to a canonical frontal rectangle, edits text in that normalized space, then transfers back. STTN sees multiple frames jointly for temporal consistency.
-- Classical frontalization (getPerspectiveTransform quad→rect) is feasible for planar text but doesn't handle non-planar surfaces, motion blur, or temporal smoothness like STTN does.
-- If implementing Stage C: replace S2's optical flow + homography with STTN, and the pipeline would need an explicit frontalize→edit→de-frontalize flow instead of the current ref-centric propagation.
+## Gotchas
+- Never import easyocr or googletrans at module level — they're lazy-loaded and may not be installed
+- Always activate conda env before running tests or pipeline
+- All frames loaded into memory — will break on long videos (>500 frames)
+- googletrans is unofficial and may fail silently — always verify translation output
+- config weight arrays must sum to ~1.0 (detection: 4 weights, reference: 2 weights) — validation catches this
 
-## Key Architecture Decisions
+## Git
+- Never push directly to main
+- Commit format: type(scope): description — e.g., feat(stageb): add histogram matching
+- Run tests and lint before committing: `cd code && python -m pytest tests/ -v && ruff check code/`
 
-- **Central data structure**: `TextTrack` flows through all 5 stages. S1 creates it, S2-S5 enrich it.
-- **Stage A abstraction**: `BaseTextEditor` ABC in `src/models/base_text_editor.py`. To integrate a real model, subclass it and change `text_editor.backend` in config. No pipeline code changes needed.
-- **Config-driven**: All parameters in `config/default.yaml`. CLI overrides via `scripts/run_pipeline.py`.
-- **All frames in memory**: Works for short clips. Needs sliding-window for long videos.
-- **Detections keyed by frame_idx** (dict, not list) for O(1) lookup.
-
-## Environment
-
-- **Conda env**: `vc_final` (Python 3.11)
-- **Activate**: `conda activate vc_final`
-- **Core deps installed**: numpy, opencv-python, PyYAML, Pillow, pytest, pytest-cov
-- **NOT yet installed** (install when needed): `easyocr`, `googletrans==4.0.0-rc1`
-- **Run tests**: `cd code && python -m pytest tests/ -v`
-- **Run pipeline**: `python scripts/run_pipeline.py --input video.mp4 --output out.mp4 --source-lang en --target-lang es`
-
-## Known Limitations (Stage B)
-
-- Track grouping is IoU-based — breaks with large camera motion
-- Optical flow drifts over long sequences
-- Histogram matching is global per ROI (no spatially varying lighting)
-- Placeholder editor uses OpenCV putText (crude, no style matching)
-- `googletrans` is unofficial/unreliable — config supports swapping to `google-cloud-translate`
-
-## What's Next
-
-- Integrate real Stage A model (RS-STE or AnyText2) into `src/models/`
-- Install easyocr + googletrans and test end-to-end on real video
-- Stage C: STTN for frontalization, TPM for propagation
-- Evaluation metrics and cross-model comparison (due Apr 3)
+## Reference Docs
+- For architecture decisions, see docs/architecture.md
+- Pipeline diagram: _refs/pipeline.png
+- Milestone report: _refs/report.pdf
