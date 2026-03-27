@@ -30,7 +30,7 @@ Output Video
 
 ## Key Data Types
 
-These dataclasses flow through the pipeline. Each stage reads and enriches them.
+These dataclasses flow through the pipeline. Each stage reads and enriches them. All defined in [`code/src/data_types.py`](code/src/data_types.py).
 
 ### BBox
 Axis-aligned bounding box. Fields: `x`, `y`, `width`, `height`. Provides `to_slice()` for numpy array indexing and `area()`. Derived from `Quad` via `quad.to_bbox()` — used for fast IoU matching and array cropping where perspective accuracy isn't needed.
