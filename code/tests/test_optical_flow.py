@@ -4,13 +4,13 @@ import cv2
 import numpy as np
 import pytest
 
-from src.config import FrontalizationConfig
+from src.config import DetectionConfig
 from src.utils.optical_flow import track_points_farneback, track_points_lucas_kanade
 
 
 @pytest.fixture
 def flow_config():
-    return FrontalizationConfig()
+    return DetectionConfig()
 
 
 @pytest.fixture

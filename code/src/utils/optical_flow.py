@@ -20,7 +20,7 @@ def track_points_farneback(
         prev_gray: Previous frame (grayscale, uint8).
         curr_gray: Current frame (grayscale, uint8).
         prev_points: (N, 2) points to track, (x, y) format.
-        config: FrontalizationConfig with Farneback parameters.
+        config: DetectionConfig with Farneback parameters.
 
     Returns:
         (N, 2) tracked points, or None if tracking failed.
@@ -63,7 +63,7 @@ def track_points_lucas_kanade(
         prev_gray: Previous frame (grayscale, uint8).
         curr_gray: Current frame (grayscale, uint8).
         prev_points: (N, 2) points to track.
-        config: FrontalizationConfig with LK parameters.
+        config: DetectionConfig with LK parameters.
 
     Returns:
         (N, 2) tracked points, or None if any point lost track.

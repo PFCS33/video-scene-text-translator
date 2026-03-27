@@ -29,6 +29,16 @@ class DetectionConfig:
     ref_weight_frontality: float = 0.3  # bbox area ratio
     # Process every N-th frame for detection (1 = every frame)
     frame_sample_rate: int = 1
+    # Optical flow for gap-filling (tracking quads between sampled frames)
+    optical_flow_method: str = "farneback"  # "farneback" or "lucas_kanade"
+    farneback_pyr_scale: float = 0.5
+    farneback_levels: int = 3
+    farneback_winsize: int = 15
+    farneback_iterations: int = 3
+    farneback_poly_n: int = 5
+    farneback_poly_sigma: float = 1.2
+    lk_win_size: list[int] = field(default_factory=lambda: [21, 21])
+    lk_max_level: int = 3
 
 
 @dataclass
@@ -41,21 +51,9 @@ class TranslationConfig:
 
 @dataclass
 class FrontalizationConfig:
-    optical_flow_method: str = "farneback"  # "farneback" or "lucas_kanade"
-    # Farneback parameters
-    farneback_pyr_scale: float = 0.5
-    farneback_levels: int = 3
-    farneback_winsize: int = 15
-    farneback_iterations: int = 3
-    farneback_poly_n: int = 5
-    farneback_poly_sigma: float = 1.2
-    # Lucas-Kanade parameters
-    lk_win_size: list[int] = field(default_factory=lambda: [21, 21])
-    lk_max_level: int = 3
-    # Homography
+    # Homography computation (frame quad → canonical frontal rectangle)
     homography_method: str = "RANSAC"
     ransac_reproj_threshold: float = 5.0
-    min_inliers: int = 4
 
 
 @dataclass

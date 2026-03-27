@@ -22,14 +22,7 @@ detection:
   ref_weight_contrast: 0.7    # Otsu interclass variance
   ref_weight_frontality: 0.3  # bbox area ratio
   frame_sample_rate: 1
-
-translation:
-  source_lang: "en"
-  target_lang: "es"
-  backend: "googletrans"
-  api_key: null
-
-frontalization:
+  # Optical flow for gap-filling (tracking quads between sampled frames)
   optical_flow_method: "farneback"
   farneback_pyr_scale: 0.5
   farneback_levels: 3
@@ -39,9 +32,17 @@ frontalization:
   farneback_poly_sigma: 1.2
   lk_win_size: [21, 21]
   lk_max_level: 3
+
+translation:
+  source_lang: "en"
+  target_lang: "es"
+  backend: "googletrans"
+  api_key: null
+
+frontalization:
+  # Homography computation (frame quad → canonical frontal rectangle)
   homography_method: "RANSAC"
   ransac_reproj_threshold: 5.0
-  min_inliers: 4
 
 propagation:
   color_space: "YCrCb"

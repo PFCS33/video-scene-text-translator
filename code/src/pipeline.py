@@ -65,9 +65,9 @@ class VideoPipeline:
                 frame_size=frame_size,
             )
 
-        # S2: Frontalization
+        # S2: Frontalization (computes homographies, writes into TextDetection)
         logger.info("=== Stage 2: Frontalization ===")
-        all_homographies = self.s2.run(tracks, frames)
+        tracks = self.s2.run(tracks)
 
         # S3: Text Editing
         logger.info("=== Stage 3: Text Editing ===")
@@ -79,9 +79,7 @@ class VideoPipeline:
 
         # S5: Revert
         logger.info("=== Stage 5: Revert ===")
-        output_frames = self.s5.run(
-            frames, propagated_rois, all_homographies, tracks
-        )
+        output_frames = self.s5.run(frames, propagated_rois, tracks)
 
         # Write output video
         logger.info("Writing output video: %s", self.config.output_video)

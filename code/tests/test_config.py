@@ -12,7 +12,7 @@ class TestPipelineConfig:
         config = PipelineConfig()
         assert config.detection.ocr_confidence_threshold == 0.3
         assert config.translation.source_lang == "en"
-        assert config.frontalization.optical_flow_method == "farneback"
+        assert config.detection.optical_flow_method == "farneback"
         assert config.text_editor.backend == "placeholder"
 
     def test_validate_missing_input(self):
@@ -96,7 +96,7 @@ class TestPipelineConfig:
         assert config.translation.target_lang == "zh-cn"
         assert config.detection.ocr_confidence_threshold == 0.5
         # Defaults preserved for unspecified fields
-        assert config.frontalization.optical_flow_method == "farneback"
+        assert config.detection.optical_flow_method == "farneback"
 
     def test_from_yaml_empty_file(self):
         with tempfile.NamedTemporaryFile(
