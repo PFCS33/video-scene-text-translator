@@ -46,7 +46,6 @@ class TestTextEditingStage:
             source_lang="en", target_lang="es",
             detections={0: det},
             reference_frame_idx=0,
-            reference_quad=quad,
         )
         frames = {0: synthetic_frame}
         result = stage.run([track], frames)
@@ -59,6 +58,38 @@ class TestTextEditingStage:
         stage = TextEditingStage(config)
         with pytest.raises(ValueError, match="Unknown text editor backend"):
             stage._init_editor()
+
+    def test_uses_frontalized_roi_when_homography_available(self, default_config):
+        """When H_to_frontal is set, S3 should warp to canonical before editing."""
+        stage = TextEditingStage(default_config)
+        # Create a 200x300 frame with known pattern
+        frame = np.zeros((200, 300, 3), dtype=np.uint8)
+        frame[50:150, 100:250, :] = 200  # bright rectangle in center
+
+        quad = Quad(points=np.array([
+            [100, 50], [250, 50], [250, 150], [100, 150]
+        ], dtype=np.float32))
+        det = TextDetection(
+            frame_idx=0, quad=quad, bbox=quad.to_bbox(),
+            text="HELLO", ocr_confidence=0.9,
+            H_to_frontal=np.eye(3, dtype=np.float64),  # identity for simplicity
+            H_from_frontal=np.eye(3, dtype=np.float64),
+            homography_valid=True,
+        )
+        # canonical_size differs from bbox (150x100) to prove warp path is used
+        # bbox would give 150x100, canonical_size is 180x120
+        track = TextTrack(
+            track_id=0, source_text="HELLO", target_text="HOLA",
+            source_lang="en", target_lang="es",
+            detections={0: det},
+            reference_frame_idx=0,
+            canonical_size=(180, 120),  # width, height — differs from bbox dims
+        )
+        result = stage.run([track], {0: frame})
+        assert result[0].edited_roi is not None
+        # With identity H and canonical_size (180, 120), the ROI should be 120x180x3
+        # This differs from bbox crop which would be 100x150x3
+        assert result[0].edited_roi.shape == (120, 180, 3)
 
     def test_stage_a_not_implemented(self):
         config = PipelineConfig()

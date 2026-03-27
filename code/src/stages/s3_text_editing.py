@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 
+import cv2
 import numpy as np
 
 from src.config import PipelineConfig
@@ -64,7 +65,14 @@ class TextEditingStage:
 
             ref_frame = frames[ref_idx]
             ref_det = track.detections[ref_idx]
-            roi = ref_frame[ref_det.bbox.to_slice()].copy()
+
+            if (ref_det.H_to_frontal is not None
+                    and ref_det.homography_valid
+                    and track.canonical_size is not None):
+                w, h = track.canonical_size
+                roi = cv2.warpPerspective(ref_frame, ref_det.H_to_frontal, (w, h))
+            else:
+                roi = ref_frame[ref_det.bbox.to_slice()].copy()
 
             if roi.size == 0:
                 logger.warning(

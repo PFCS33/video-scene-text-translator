@@ -29,15 +29,16 @@ class PropagationStage:
     ) -> np.ndarray:
         """Adapt edited reference ROI to match a target frame's appearance.
 
-        Matches luminance histogram so the edited ROI looks natural
-        in the target frame.
+        Both inputs should be in canonical frontal space (same size),
+        but resizes as a safety fallback if dimensions differ.
         """
         h, w = edited_roi.shape[:2]
-        target_resized = cv2.resize(target_frame_roi, (w, h))
+        if target_frame_roi.shape[:2] != (h, w):
+            target_frame_roi = cv2.resize(target_frame_roi, (w, h))
 
         return match_histogram_luminance(
             source=edited_roi,
-            reference=target_resized,
+            reference=target_frame_roi,
             color_space=self.config.color_space,
         )
 
@@ -84,12 +85,22 @@ class PropagationStage:
                 if frame is None:
                     continue
 
-                original_roi = frame[det.bbox.to_slice()]
-                if original_roi.size == 0:
+                # Warp to canonical frontal if homography available
+                if (det.H_to_frontal is not None and det.homography_valid
+                        and track.canonical_size is not None):
+                    w, h = track.canonical_size
+                    target_roi = cv2.warpPerspective(
+                        frame, det.H_to_frontal, (w, h)
+                    )
+                else:
+                    # Fallback: bbox crop
+                    target_roi = frame[det.bbox.to_slice()]
+
+                if target_roi.size == 0:
                     continue
 
                 adapted_roi = self.propagate_to_frame(
-                    track.edited_roi, original_roi
+                    track.edited_roi, target_roi
                 )
                 alpha = self._create_alpha_mask(adapted_roi.shape[:2])
 

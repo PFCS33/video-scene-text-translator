@@ -1,5 +1,8 @@
 """Tests for Stage 4: Propagation."""
 
+from unittest.mock import patch
+
+import cv2
 import numpy as np
 import pytest
 
@@ -62,7 +65,7 @@ class TestPropagationRun:
             source_lang="en", target_lang="es",
             detections={0: det},
             reference_frame_idx=0,
-            reference_quad=quad,
+
             edited_roi=edited_roi,
         )
         frames = {0: synthetic_frame}
@@ -80,3 +83,96 @@ class TestPropagationRun:
         )
         result = propagation_stage.run([track], {})
         assert result == {}
+
+    def test_uses_frontalized_roi_when_homography_available(self, default_config):
+        """When H_to_frontal is set, S4 should warp frame to canonical via warpPerspective."""
+        stage = PropagationStage(default_config)
+        frame = np.full((200, 300, 3), 100, dtype=np.uint8)
+
+        quad = Quad(points=np.array([
+            [50, 50], [250, 50], [250, 150], [50, 150]
+        ], dtype=np.float32))
+        H = np.eye(3, dtype=np.float64)
+        det = TextDetection(
+            frame_idx=0, quad=quad, bbox=quad.to_bbox(),
+            text="HELLO", ocr_confidence=0.9,
+            H_to_frontal=H,
+            H_from_frontal=H,
+            homography_valid=True,
+        )
+        edited_roi = np.full((80, 180, 3), 150, dtype=np.uint8)
+        track = TextTrack(
+            track_id=0, source_text="HELLO", target_text="HOLA",
+            source_lang="en", target_lang="es",
+            detections={0: det},
+            reference_frame_idx=0,
+
+            canonical_size=(180, 80),
+            edited_roi=edited_roi,
+        )
+        with patch("src.stages.s4_propagation.cv2.warpPerspective",
+                    wraps=cv2.warpPerspective) as mock_warp:
+            result = stage.run([track], {0: frame})
+
+        # Verify warpPerspective was called (the frontalization path)
+        mock_warp.assert_called_once()
+        np.testing.assert_array_equal(mock_warp.call_args.args[1], H)
+        assert mock_warp.call_args.args[2] == (180, 80)
+
+        assert 0 in result
+        assert len(result[0]) == 1
+        assert result[0][0].roi_image.shape == (80, 180, 3)
+
+    def test_falls_back_to_bbox_when_no_homography(self, default_config, synthetic_frame):
+        """Without homography, S4 should fall back to bbox crop."""
+        stage = PropagationStage(default_config)
+        quad = Quad(points=np.array([
+            [200, 150], [440, 150], [440, 250], [200, 250]
+        ], dtype=np.float32))
+        det = TextDetection(
+            frame_idx=0, quad=quad, bbox=quad.to_bbox(),
+            text="HELLO", ocr_confidence=0.9,
+            # No homography fields set — defaults to None/False
+        )
+        edited_roi = np.full((100, 240, 3), 128, dtype=np.uint8)
+        track = TextTrack(
+            track_id=0, source_text="HELLO", target_text="HOLA",
+            source_lang="en", target_lang="es",
+            detections={0: det},
+            reference_frame_idx=0,
+
+            edited_roi=edited_roi,
+        )
+        result = stage.run([track], {0: synthetic_frame})
+        assert 0 in result
+        assert len(result[0]) == 1
+        assert result[0][0].roi_image.shape[:2] == edited_roi.shape[:2]
+
+    def test_falls_back_when_homography_invalid(self, default_config, synthetic_frame):
+        """Even with H_to_frontal set, if homography_valid=False, fall back to bbox."""
+        stage = PropagationStage(default_config)
+        quad = Quad(points=np.array([
+            [200, 150], [440, 150], [440, 250], [200, 250]
+        ], dtype=np.float32))
+        det = TextDetection(
+            frame_idx=0, quad=quad, bbox=quad.to_bbox(),
+            text="HELLO", ocr_confidence=0.9,
+            H_to_frontal=np.eye(3, dtype=np.float64),
+            H_from_frontal=np.eye(3, dtype=np.float64),
+            homography_valid=False,  # marked invalid
+        )
+        edited_roi = np.full((100, 240, 3), 128, dtype=np.uint8)
+        track = TextTrack(
+            track_id=0, source_text="HELLO", target_text="HOLA",
+            source_lang="en", target_lang="es",
+            detections={0: det},
+            reference_frame_idx=0,
+
+            canonical_size=(240, 100),
+            edited_roi=edited_roi,
+        )
+        result = stage.run([track], {0: synthetic_frame})
+        assert 0 in result
+        assert len(result[0]) == 1
+        # Should still match edited_roi shape via bbox fallback
+        assert result[0][0].roi_image.shape[:2] == edited_roi.shape[:2]
