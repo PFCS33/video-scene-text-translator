@@ -117,6 +117,47 @@ def quad_bbox_area_ratio(quad: Quad) -> float:
     return float(np.clip(q_area / bbox_area, 0, 1))
 
 
+def canonical_rect_from_quad(quad: Quad) -> tuple[np.ndarray, tuple[int, int]]:
+    """Derive a canonical frontal rectangle from a quad's dimensions.
+
+    Computes average width and height from the quad's edges, then returns
+    an axis-aligned rectangle [[0,0], [w,0], [w,h], [0,h]] preserving
+    the quad's aspect ratio.
+
+    Args:
+        quad: The source quad (4 corners, any perspective).
+
+    Returns:
+        (rect_points, (width, height)):
+            rect_points: (4, 2) float32 array of canonical rectangle corners.
+            (width, height): integer dimensions of the canonical rectangle.
+
+    Raises:
+        ValueError: If the quad is degenerate (near-zero width or height).
+    """
+    pts = quad.points
+    top_w = float(np.linalg.norm(pts[1] - pts[0]))
+    bot_w = float(np.linalg.norm(pts[2] - pts[3]))
+    left_h = float(np.linalg.norm(pts[3] - pts[0]))
+    right_h = float(np.linalg.norm(pts[2] - pts[1]))
+
+    w = (top_w + bot_w) / 2
+    h = (left_h + right_h) / 2
+
+    if w < 1 or h < 1:
+        msg = f"Degenerate quad: average width={w:.1f}, height={h:.1f}"
+        raise ValueError(msg)
+
+    w_int = max(1, round(w))
+    h_int = max(1, round(h))
+
+    rect = np.array(
+        [[0, 0], [w_int, 0], [w_int, h_int], [0, h_int]],
+        dtype=np.float32,
+    )
+    return rect, (w_int, h_int)
+
+
 def warp_points(points: np.ndarray, H: np.ndarray) -> np.ndarray:
     """Apply homography H to a set of 2D points.
 

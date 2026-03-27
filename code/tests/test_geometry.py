@@ -5,6 +5,7 @@ import pytest
 
 from src.data_types import Quad
 from src.utils.geometry import (
+    canonical_rect_from_quad,
     compute_homography,
     quad_area,
     quad_bbox_area_ratio,
@@ -123,6 +124,58 @@ class TestQuadBboxAreaRatio:
         quad = Quad(points=np.zeros((4, 2), dtype=np.float32))
         ratio = quad_bbox_area_ratio(quad)
         assert ratio == 0.0
+
+
+class TestCanonicalRectFromQuad:
+    def test_rectangle_preserves_dimensions(self):
+        """A 200x50 rectangle should produce a 200x50 canonical rect."""
+        quad = Quad(points=np.array([
+            [0, 0], [200, 0], [200, 50], [0, 50]
+        ], dtype=np.float32))
+        rect, size = canonical_rect_from_quad(quad)
+        assert size == (200, 50)
+        expected = np.array([[0, 0], [200, 0], [200, 50], [0, 50]], dtype=np.float32)
+        np.testing.assert_allclose(rect, expected, atol=1.0)
+
+    def test_trapezoid_averages_edges(self):
+        """Trapezoid: top=200, bottom=300, sides are diagonal (~71px)."""
+        quad = Quad(points=np.array([
+            [50, 0], [250, 0], [300, 50], [0, 50]
+        ], dtype=np.float32))
+        rect, size = canonical_rect_from_quad(quad)
+        assert size[0] == 250  # avg of top(200) and bottom(300)
+        # Height is avg of left and right diagonal edges (~70.7)
+        assert 70 <= size[1] <= 72
+        assert rect.shape == (4, 2)
+        # Starts at origin, axis-aligned
+        np.testing.assert_allclose(rect[0], [0, 0], atol=1e-5)
+
+    def test_output_starts_at_origin(self, rect_quad):
+        rect, _ = canonical_rect_from_quad(rect_quad)
+        np.testing.assert_allclose(rect[0], [0, 0], atol=1e-5)
+
+    def test_output_is_axis_aligned(self, rect_quad):
+        rect, (w, h) = canonical_rect_from_quad(rect_quad)
+        # TL, TR, BR, BL ordering
+        np.testing.assert_allclose(rect[0], [0, 0], atol=1e-5)
+        np.testing.assert_allclose(rect[1], [w, 0], atol=1e-5)
+        np.testing.assert_allclose(rect[2], [w, h], atol=1e-5)
+        np.testing.assert_allclose(rect[3], [0, h], atol=1e-5)
+
+    def test_degenerate_quad_raises(self):
+        """Near-zero width or height should raise ValueError."""
+        quad = Quad(points=np.array([
+            [0, 0], [0.5, 0], [0.5, 50], [0, 50]
+        ], dtype=np.float32))
+        with pytest.raises(ValueError, match="Degenerate quad"):
+            canonical_rect_from_quad(quad)
+
+    def test_degenerate_zero_height_raises(self):
+        quad = Quad(points=np.array([
+            [0, 0], [200, 0], [200, 0.5], [0, 0.5]
+        ], dtype=np.float32))
+        with pytest.raises(ValueError, match="Degenerate quad"):
+            canonical_rect_from_quad(quad)
 
 
 class TestWarpPoints:
