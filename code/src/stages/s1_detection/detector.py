@@ -24,7 +24,7 @@ class TextDetector:
         if self._reader is None:
             import easyocr
             self._reader = easyocr.Reader(
-                self.config.ocr_languages, gpu=False
+                self.config.ocr_languages, gpu=True
             )
 
     def detect_text_in_frame(

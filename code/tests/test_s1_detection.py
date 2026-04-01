@@ -265,3 +265,27 @@ class TestFillGaps:
         frame = np.full((480, 640, 3), 128, dtype=np.uint8)
         result = tracker.fill_gaps([track], {0: frame, 1: frame})
         assert len(result[0].detections) == 2
+
+
+class TestTranslateText:
+    def test_blank_text_short_circuits_translation(self, default_config):
+        stage = DetectionStage(default_config)
+
+        class DummyTranslator:
+            def translate(self, *args, **kwargs):
+                raise AssertionError("translate() should not be called")
+
+        stage.selector._translator = DummyTranslator()
+        result = stage.selector.translate_text("   ")
+        assert result == "   "
+
+    def test_translation_error_falls_back_to_source_text(self, default_config):
+        stage = DetectionStage(default_config)
+
+        class FailingTranslator:
+            def translate(self, *args, **kwargs):
+                raise RuntimeError("translator unavailable")
+
+        stage.selector._translator = FailingTranslator()
+        result = stage.selector.translate_text("COFFEE")
+        assert result == "COFFEE"

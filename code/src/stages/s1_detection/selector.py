@@ -33,21 +33,33 @@ class ReferenceSelector:
 
     def translate_text(self, text: str) -> str:
         """Translate text from source_lang to target_lang."""
+        if not text or not text.strip():
+            return text
+
         self._init_translator()
-        if self.translation_config.backend == "googletrans":
-            result = self._translator.translate(
-                text,
-                src=self.translation_config.source_lang,
-                dest=self.translation_config.target_lang,
-            )
-            return result.text
-        else:
+        try:
+            if self.translation_config.backend == "googletrans":
+                result = self._translator.translate(
+                    text,
+                    src=self.translation_config.source_lang,
+                    dest=self.translation_config.target_lang,
+                )
+                return result.text
+
             result = self._translator.translate(
                 text,
                 source_language=self.translation_config.source_lang,
                 target_language=self.translation_config.target_lang,
             )
             return result["translatedText"]
+        except Exception as exc:
+            logger.warning(
+                "Translation failed for text '%s' with backend '%s': %s",
+                text,
+                self.translation_config.backend,
+                exc,
+            )
+            return text
 
     def select_reference_frames(
         self, tracks: list[TextTrack]
