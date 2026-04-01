@@ -8,6 +8,7 @@ gaps via optical flow.
 from __future__ import annotations
 
 import logging
+import time
 
 import numpy as np
 
@@ -38,6 +39,7 @@ class DetectionStage:
         sample_rate = self.config.frame_sample_rate
         all_detections: dict[int, list[TextDetection]] = {}
 
+        t0_ocr = time.perf_counter()
         for frame_idx, frame in frames:
             if frame_idx % sample_rate != 0:
                 continue
@@ -45,6 +47,8 @@ class DetectionStage:
             if dets:
                 all_detections[frame_idx] = dets
             logger.debug("S1: Frame %d -> %d detections", frame_idx, len(dets))
+        t_ocr = time.perf_counter() - t0_ocr
+        logger.info("S1: OCR detection took %.2fs (%d frames sampled)", t_ocr, len(all_detections))
 
         tracks = self.tracker.group_detections_into_tracks(
             all_detections,
@@ -73,7 +77,13 @@ class DetectionStage:
 
         # Fill gaps via optical flow
         frames_dict = {idx: f for idx, f in frames}
+        t0_flow = time.perf_counter()
         tracks = self.tracker.fill_gaps(tracks, frames_dict)
+        t_flow = time.perf_counter() - t0_flow
+        logger.info(
+            "S1: Optical flow (%s) took %.2fs (%d tracks)",
+            self.config.optical_flow_method, t_flow, len(tracks),
+        )
 
         logger.info("S1: Found %d text tracks", len(tracks))
         return tracks
