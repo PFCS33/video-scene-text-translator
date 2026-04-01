@@ -1,19 +1,34 @@
 """Placeholder text editor for Stage B pipeline testing.
 
-Renders target text using OpenCV putText. Produces a crude result
-but allows end-to-end pipeline testing without a real Stage A model.
+Renders target text using Pillow (PIL) for full Unicode support.
+Produces a crude result but allows end-to-end pipeline testing
+without a real Stage A model.
 """
 
 from __future__ import annotations
 
-import cv2
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 
 from src.models.base_text_editor import BaseTextEditor
 
+# DejaVu Sans shipped with matplotlib supports Latin/accented characters.
+_FONT_PATH = None
+try:
+    import matplotlib
+    import os
+    _candidate = os.path.join(
+        os.path.dirname(matplotlib.__file__),
+        "mpl-data", "fonts", "ttf", "DejaVuSans.ttf",
+    )
+    if os.path.isfile(_candidate):
+        _FONT_PATH = _candidate
+except ImportError:
+    pass
+
 
 class PlaceholderTextEditor(BaseTextEditor):
-    """Renders target text onto the ROI using OpenCV.
+    """Renders target text onto the ROI using Pillow.
 
     Strategy:
     1. Estimate dominant background color from border pixels.
@@ -44,25 +59,43 @@ class PlaceholderTextEditor(BaseTextEditor):
         margin_w = max(1, w // 8)
         result[margin_h:h - margin_h, margin_w:w - margin_w] = bg_color
 
+        # Available area for text
+        avail_w = w - 2 * margin_w
+        avail_h = h - 2 * margin_h
+
         # Auto-scale font to fit within ROI
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        thickness = max(1, h // 30)
-        font_scale = 0.3
-        for scale in np.arange(0.3, 5.0, 0.1):
-            (tw, th), _ = cv2.getTextSize(target_text, font, scale, thickness)
-            if tw > (w - 2 * margin_w) or th > (h - 2 * margin_h):
-                font_scale = max(0.3, scale - 0.1)
+        font_size = 8
+        best_font = self._load_font(font_size)
+        for size in range(8, max(9, h * 2)):
+            font = self._load_font(size)
+            bbox = font.getbbox(target_text)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            if tw > avail_w or th > avail_h:
                 break
-            font_scale = scale
+            best_font = font
+            font_size = size
 
-        (tw, th), baseline = cv2.getTextSize(
-            target_text, font, font_scale, thickness
-        )
-        text_x = (w - tw) // 2
-        text_y = (h + th) // 2
+        # Convert BGR -> RGB for Pillow
+        pil_img = Image.fromarray(result[:, :, ::-1])
+        draw = ImageDraw.Draw(pil_img)
 
-        cv2.putText(
-            result, target_text, (text_x, text_y), font,
-            font_scale, text_color, thickness, cv2.LINE_AA,
+        bbox = best_font.getbbox(target_text)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        text_x = (w - tw) // 2 - bbox[0]
+        text_y = (h - th) // 2 - bbox[1]
+
+        # PIL text color is RGB (result is BGR, but we converted)
+        draw.text(
+            (text_x, text_y), target_text,
+            fill=(text_color[2], text_color[1], text_color[0]),
+            font=best_font,
         )
-        return result
+
+        # Convert RGB -> BGR back to OpenCV format
+        return np.array(pil_img)[:, :, ::-1].copy()
+
+    @staticmethod
+    def _load_font(size: int) -> ImageFont.FreeTypeFont:
+        if _FONT_PATH:
+            return ImageFont.truetype(_FONT_PATH, size)
+        return ImageFont.load_default(size=size)
