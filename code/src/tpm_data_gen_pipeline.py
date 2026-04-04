@@ -9,6 +9,7 @@ ROI text images.  Processes video in two passes with bounded memory:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 
@@ -39,29 +40,48 @@ class TPMDataGenPipeline:
             raise ValueError(f"Invalid config: {'; '.join(errors)}")
 
         # --- Pass 1: Streaming detection ---
-        logger.info("=== Pass 1: Streaming Detection ===")
-        logger.info("Input video: %s", self.config.input_video)
-        with VideoReader(self.config.input_video) as reader:
-            tracks = self.s1.run(reader)
-        
-        if self.config.detection.optical_flow_method == "cotracker":
-            min_frames = self.s1.tracker._get_cotracker_min_frames()
-            before = len(tracks)
-            #tracks = [
-            #    t for t in tracks
-            #    if t.detections and (max(t.detections) - min(t.detections) + 1) >= min_frames
-            #]
-            tracks = [
-                t for t in tracks
-                if t.detections and len(t.detections) >= min_frames
-            ]
-            dropped = before - len(tracks)
-            if dropped:
-                logger.info("Dropped %d tracks shorter than %d frames (CoTracker minimum)", dropped, min_frames)
+        if not self.config.tpm_data_gen.load_detected_tracks:
+            logger.info("=== Pass 1: Streaming Detection ===")
+            logger.info("Input video: %s", self.config.input_video)
+            with VideoReader(self.config.input_video) as reader:
+                tracks = self.s1.run(reader)
+            
+            if self.config.detection.optical_flow_method == "cotracker":
+                min_frames = self.s1.tracker._get_cotracker_min_frames()
+                before = len(tracks)
+                #tracks = [
+                #    t for t in tracks
+                #    if t.detections and (max(t.detections) - min(t.detections) + 1) >= min_frames
+                #]
+                tracks = [
+                    t for t in tracks
+                    if t.detections and len(t.detections) >= min_frames
+                ]
+                dropped = before - len(tracks)
+                if dropped:
+                    logger.info("Dropped %d tracks shorter than %d frames (CoTracker minimum)", dropped, min_frames)
 
-        if not tracks:
-            logger.warning("No text tracks found. Quitting.")
-            return None
+            if not tracks:
+                logger.warning("No text tracks found. Quitting.")
+                return None
+            
+            # save detected tracks in case we want to do another run without redoing S1
+            if self.config.tpm_data_gen.save_detected_tracks:
+                os.makedirs(self.config.output_dir, exist_ok=True)
+                track_json_path = os.path.join(self.config.output_dir, "s1_tracks.json")
+                with open(track_json_path, "w") as f:
+                    json.dump([track.to_json_serializable() for track in tracks], f, indent=2)
+                logger.info("Saved %d S1 tracks to %s", len(tracks), track_json_path)
+        else:
+            # Load detected tracks from JSON instead of re-running S1
+            track_json_path = os.path.join(self.config.output_dir, "s1_tracks.json")
+            if not os.path.exists(track_json_path):
+                logger.error("Track JSON file not found at %s", track_json_path)
+                return None
+            with open(track_json_path, "r") as f:
+                tracks_data = json.load(f)
+            tracks = [TextTrack.from_json_serializable(data) for data in tracks_data]
+            logger.info("Loaded %d S1 tracks from %s", len(tracks), track_json_path)
 
         # --- Pass 2: Per-track gap-fill + frontalization + ROI extraction ---
         logger.info("=== Pass 2: Gap-fill + Frontalization + ROI Extraction ===")

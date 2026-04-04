@@ -44,6 +44,14 @@ def parse_args() -> argparse.Namespace:
         "--debug-dir", type=str, default=None,
         help="Directory to save intermediate debug outputs",
     )
+    parser.add_argument(
+        "--save-detected-tracks", action="store_true",
+        help="Whether to save detected tracks from S1 to JSON for reuse",
+    )
+    parser.add_argument(
+        "--load-detected-tracks", action="store_true",
+        help="Whether to load detected tracks from JSON instead of re-running S1",
+    )
     return parser.parse_args()
 
 
@@ -66,6 +74,10 @@ def main():
         with open(args.word_whitelist, newline="") as f:
             reader = csv.reader(f)
             config.detection.word_whitelist = {row[0].strip().lower() for row in reader if row}
+    if args.save_detected_tracks:
+        config.tpm_data_gen.save_detected_tracks = True
+    if args.load_detected_tracks:
+        config.tpm_data_gen.load_detected_tracks = True
     if args.log_level:
         config.log_level = args.log_level
     if args.debug_dir:

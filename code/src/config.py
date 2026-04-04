@@ -87,6 +87,16 @@ class TextEditorConfig:
     model_path: str | None = None
     device: str = "cpu"
 
+@dataclass
+class TPMDataGenConfig:
+    # For generating data for text propagation model training instead of video output
+    output_dir: str = "tpm_data_output"
+    save_detected_tracks: bool = True  # Whether to save S1 tracks to JSON for reuse
+    load_detected_tracks: bool = False  # Whether to load S1 tracks from JSON instead of re-running detection
+    max_tracks: int = 100
+    max_frames_per_track: int = 20
+    frame_sample_rate: int = 1  # Sample every N-th frame from each track
+
 
 @dataclass
 class PipelineConfig:
@@ -96,6 +106,7 @@ class PipelineConfig:
     propagation: PropagationConfig = field(default_factory=PropagationConfig)
     revert: RevertConfig = field(default_factory=RevertConfig)
     text_editor: TextEditorConfig = field(default_factory=TextEditorConfig)
+    tpm_data_gen: TPMDataGenConfig = field(default_factory=TPMDataGenConfig)
     # Global
     input_video: str = ""
     output_video: str = ""
@@ -115,6 +126,7 @@ class PipelineConfig:
             propagation=PropagationConfig(**raw.get("propagation", {})),
             revert=RevertConfig(**raw.get("revert", {})),
             text_editor=TextEditorConfig(**raw.get("text_editor", {})),
+            tpm_data_gen=TPMDataGenConfig(**raw.get("tpm_data_gen", {})),
             input_video=raw.get("input_video", ""),
             output_video=raw.get("output_video", ""),
             output_dir=raw.get("output_dir", ""),

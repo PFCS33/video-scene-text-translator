@@ -111,6 +111,71 @@ class TextTrack:
         """Quad from the reference frame's detection."""
         det = self.detections.get(self.reference_frame_idx)
         return det.quad if det else None
+    
+    def to_json_serializable(self) -> dict:
+        """Convert to a JSON-serializable dict (e.g. for logging or output)."""
+        return {
+            "track_id": self.track_id,
+            "source_text": self.source_text,
+            "target_text": self.target_text,
+            "source_lang": self.source_lang,
+            "target_lang": self.target_lang,
+            "reference_frame_idx": self.reference_frame_idx,
+            "canonical_size": self.canonical_size,
+            "detections": {
+                idx: {
+                    "frame_idx": det.frame_idx,
+                    "quad": det.quad.points.tolist(),
+                    "bbox": {
+                        "x": det.bbox.x,
+                        "y": det.bbox.y,
+                        "width": det.bbox.width,
+                        "height": det.bbox.height,
+                    },
+                    "text": det.text,
+                    "ocr_confidence": det.ocr_confidence,
+                    "sharpness_score": det.sharpness_score,
+                    "contrast_score": det.contrast_score,
+                    "frontality_score": det.frontality_score,
+                    "composite_score": det.composite_score,
+                    # Homography fields are not included in JSON output for brevity
+                }
+                for idx, det in self.detections.items()
+            },
+        }
+    
+    @classmethod
+    def from_json_serializable(cls, data: dict) -> TextTrack:
+        """Create a TextTrack from a JSON-deserialized dict."""
+        detections = {
+            int(idx): TextDetection(
+                frame_idx=det_data["frame_idx"],
+                quad=Quad(points=np.array(det_data["quad"], dtype=np.float32)),
+                bbox=BBox(
+                    x=det_data["bbox"]["x"],
+                    y=det_data["bbox"]["y"],
+                    width=det_data["bbox"]["width"],
+                    height=det_data["bbox"]["height"],
+                ),
+                text=det_data["text"],
+                ocr_confidence=det_data["ocr_confidence"],
+                sharpness_score=det_data.get("sharpness_score", 0.0),
+                contrast_score=det_data.get("contrast_score", 0.0),
+                frontality_score=det_data.get("frontality_score", 0.0),
+                composite_score=det_data.get("composite_score", 0.0),
+            )
+            for idx, det_data in data["detections"].items()
+        }
+        return cls(
+            track_id=data["track_id"],
+            source_text=data["source_text"],
+            target_text=data["target_text"],
+            source_lang=data["source_lang"],
+            target_lang=data["target_lang"],
+            reference_frame_idx=data["reference_frame_idx"],
+            canonical_size=tuple(data["canonical_size"]) if data.get("canonical_size") else None,
+            detections=detections,
+        )
 
 
 @dataclass
