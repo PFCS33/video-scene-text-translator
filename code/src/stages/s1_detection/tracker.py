@@ -106,6 +106,7 @@ class TextTracker:
                     target_lang=target_lang,
                     detections={frame_idx: det},
                 )
+                logger.info(f"Created track {track.track_id} for text '{track.source_text}' at frame {frame_idx}")
                 tracks.append(track)
                 active[next_track_id] = det
                 next_track_id += 1

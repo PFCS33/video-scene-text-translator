@@ -67,6 +67,7 @@ class ReferenceSelector:
         """Select reference frame per track using STRIVE-aligned criteria.
 
         Pipeline (hard pre-filters, then 2-metric composite):
+        0. Filter: Detections must have the longest text in the track
         1. Filter: OCR confidence >= ref_ocr_min_confidence
         2. Filter: Keep top-K by sharpness (ref_sharpness_top_k)
         3. Score: 0.7 * contrast (Otsu) + 0.3 * frontality (bbox area ratio)
@@ -80,6 +81,13 @@ class ReferenceSelector:
                 continue
 
             candidates = list(track.detections.items())
+
+            # Hard filter 0: keep only detections with the longest text in the track
+            max_len = max(len(det.text) for _, det in candidates)
+            candidates = [
+                (idx, det) for idx, det in candidates
+                if len(det.text) == max_len
+            ]
 
             # Hard filter 1: OCR confidence
             ocr_min = self.config.ref_ocr_min_confidence
