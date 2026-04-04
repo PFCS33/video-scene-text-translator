@@ -13,9 +13,10 @@ logger = logging.getLogger(__name__)
 class CoTrackerOnlineFlowTracker:
     """Chunked point tracker using CoTracker3 online mode.
 
-    Processes video frames in sliding windows of ``step * 2`` frames,
-    advancing by ``step`` each iteration.  Only a small number of frames
-    are held in GPU memory at any time, making it suitable for long videos.
+    Streams frames forward from the start of the track via VideoReader.
+    The reference frame must be within the first sliding window
+    (``window_len`` frames) so the model sees the query points' appearance
+    immediately.  Only ~2*step frames are held in GPU memory at any time.
     """
 
     def __init__(self, config):
@@ -60,6 +61,10 @@ class CoTrackerOnlineFlowTracker:
     ) -> dict[int, np.ndarray]:
         """Track points from a reference frame across ``frame_idxs`` using online mode.
 
+        Streams frames forward from the start of ``frame_idxs``.  The
+        reference frame must be near the start (within ``window_len``
+        frames) so the model sees the query appearance in the first window.
+
         Args:
             video_reader: ``VideoReader`` instance (supports ``read_frame``).
             frame_idxs: sorted list of frame indices to track through.
@@ -75,80 +80,87 @@ class CoTrackerOnlineFlowTracker:
 
         step = self._model.step
         n_points = ref_points.shape[0]
+        T = len(frame_idxs)
+        t_ref = frame_idxs.index(ref_idx)
 
         # Build queries: (1, N, 3) with format (t, x, y)
-        # t is relative to the start of frame_idxs
-        t_ref = frame_idxs.index(ref_idx)
         queries = torch.zeros(1, n_points, 3, device=self._device)
         queries[0, :, 0] = t_ref
         queries[0, :, 1] = torch.tensor(ref_points[:, 0], dtype=torch.float32)
         queries[0, :, 2] = torch.tensor(ref_points[:, 1], dtype=torch.float32)
 
-        # Read all frames into a buffer (bounded by track length, typically short per-track)
-        # For online mode we need to feed chunks sequentially
-        frame_buffer = []
+        # Stream frames and feed in overlapping windows of 2*step
+        window_buf: list[torch.Tensor] = []  # each: (C, H, W)
+        all_tracks = None
+        is_first_step = True
+        frames_fed = 0
+
         for idx in frame_idxs:
             frame = video_reader.read_frame(idx)
             if frame is None:
-                logger.warning("Failed to read frame %d, using zeros", idx)
-                # Use a black frame as fallback
-                prev = frame_buffer[-1] if frame_buffer else np.zeros((1080, 1920, 3), dtype=np.uint8)
-                frame_buffer.append(prev)
+                logger.warning("Failed to read frame %d, reusing previous", idx)
+                if window_buf:
+                    frame_t = window_buf[-1]
+                else:
+                    frame_t = torch.zeros(3, 1080, 1920, device=self._device)
             else:
-                frame_buffer.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frame_t = (
+                    torch.tensor(rgb, device=self._device)
+                    .permute(2, 0, 1)
+                    .float()
+                )
 
-        T = len(frame_buffer)
-        # Stack into tensor: (1, T, C, H, W)
-        video_tensor = (
-            torch.tensor(np.stack(frame_buffer))
-            .permute(0, 3, 1, 2)  # T, C, H, W
-            .unsqueeze(0)         # 1, T, C, H, W
-            .float()
-            .to(self._device)
-        )
-        # Free CPU buffer
-        del frame_buffer
+            window_buf.append(frame_t)
+            frames_fed += 1
 
-        # First step: initialize with queries
-        self._model(
-            video_chunk=video_tensor[:, :step * 2],
-            is_first_step=True,
-            queries=queries,
-        )
+            # Trigger processing every `step` frames, once we have >= 2*step
+            if frames_fed % step == 0 and frames_fed >= step * 2:
+                chunk_frames = window_buf[-(step * 2):]
+                chunk = torch.stack(chunk_frames).unsqueeze(0)  # (1, 2*step, C, H, W)
 
-        # Process remaining chunks — pad the last chunk if shorter than step * 2
-        all_tracks = None
-        all_vis = None
-        for ind in range(0, T - step, step):
-            chunk = video_tensor[:, ind: ind + step * 2]
-            if chunk.shape[1] < step * 2:
-                # Pad with the last frame repeated to reach step * 2
-                pad_size = step * 2 - chunk.shape[1]
-                padding = video_tensor[:, -1:].expand(-1, pad_size, -1, -1, -1)
-                chunk = torch.cat([chunk, padding], dim=1)
-            pred_tracks, pred_vis = self._model(video_chunk=chunk)
+                pred_tracks, _ = self._model(
+                    video_chunk=chunk,
+                    is_first_step=is_first_step,
+                    queries=queries if is_first_step else None,
+                )
+                if is_first_step:
+                    is_first_step = False
+                    # Init returns (None, None); process same window again
+                    pred_tracks, _ = self._model(video_chunk=chunk)
+                if pred_tracks is not None:
+                    all_tracks = pred_tracks
+
+                # Trim buffer: keep last `step` frames for overlap
+                window_buf = window_buf[-step:]
+
+        # Handle remaining frames that didn't fill a complete step
+        if frames_fed % step != 0 and frames_fed >= step * 2:
+            chunk_frames = window_buf[-(step * 2):]
+            if len(chunk_frames) < step * 2:
+                pad_size = step * 2 - len(chunk_frames)
+                chunk_frames = chunk_frames + [chunk_frames[-1]] * pad_size
+            chunk = torch.stack(chunk_frames).unsqueeze(0)
+            pred_tracks, _ = self._model(
+                video_chunk=chunk,
+                is_first_step=is_first_step,
+                queries=queries if is_first_step else None,
+            )
+            if is_first_step:
+                is_first_step = False
+                pred_tracks, _ = self._model(video_chunk=chunk)
             if pred_tracks is not None:
                 all_tracks = pred_tracks
-                all_vis = pred_vis
-
-        # Free GPU memory
-        del video_tensor
 
         if all_tracks is None:
             logger.warning("CoTracker online produced no tracks")
             return {}
 
         tracks_np = all_tracks[0].cpu().numpy()   # (T_out, N, 2)
-        vis_np = all_vis[0].cpu().numpy()          # (T_out, N)
+        t_out = tracks_np.shape[0]
 
         result: dict[int, np.ndarray] = {}
-        t_out = tracks_np.shape[0]
-        for t in range(min(t_out, len(frame_idxs))):
+        for t in range(min(t_out, T)):
             result[frame_idxs[t]] = tracks_np[t].astype(np.float32)
-            if not vis_np[t].all():
-                logger.debug(
-                    "CoTracker online: frame %d has partially occluded points (keeping anyway)",
-                    frame_idxs[t],
-                )
 
         return result

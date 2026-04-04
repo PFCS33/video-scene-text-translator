@@ -83,7 +83,14 @@ class StreamingDetectionStage:
         )
 
         # Select reference frames (no frames needed)
-        tracks = self.selector.select_reference_frames(tracks)
+        # When using CoTracker online, constrain reference to the first window
+        # so the model sees the query points immediately.
+        max_offset = None
+        if self.config.optical_flow_method == "cotracker":
+            max_offset = self.config.cotracker_online_window_len
+        tracks = self.selector.select_reference_frames(
+            tracks, max_frame_offset=max_offset,
+        )
 
         # Update source/target text from reference frame's OCR
         for track in tracks:
