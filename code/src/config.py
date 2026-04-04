@@ -94,6 +94,7 @@ class PipelineConfig:
     # Global
     input_video: str = ""
     output_video: str = ""
+    output_dir: str = "" # For TPM data gen: directory to save extracted ROIs and metadata instead of video output
     log_level: str = "INFO"
     debug_output_dir: str | None = None
 
@@ -111,6 +112,7 @@ class PipelineConfig:
             text_editor=TextEditorConfig(**raw.get("text_editor", {})),
             input_video=raw.get("input_video", ""),
             output_video=raw.get("output_video", ""),
+            output_dir=raw.get("output_dir", ""),
             log_level=raw.get("log_level", "INFO"),
             debug_output_dir=raw.get("debug_output_dir"),
         )
@@ -120,8 +122,8 @@ class PipelineConfig:
         errors = []
         if not self.input_video:
             errors.append("input_video is required")
-        if not self.output_video:
-            errors.append("output_video is required")
+        if not self.output_video and not self.output_dir:
+            errors.append("output_video or output_dir is required")
         if not (0 <= self.detection.ocr_confidence_threshold <= 1):
             errors.append("ocr_confidence_threshold must be in [0, 1]")
         det_weights = [

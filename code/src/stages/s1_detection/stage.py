@@ -67,13 +67,16 @@ class DetectionStage:
                     track.track_id, track.source_text, ref_det.text,
                 )
                 track.source_text = ref_det.text
-                try:
-                    track.target_text = self.selector.translate_text(ref_det.text)
-                except Exception:
-                    logger.warning(
-                        "Track %d: re-translation failed, keeping original",
-                        track.track_id,
-                    )
+                if self.translation_config.target_lang:
+                    try:
+                        track.target_text = self.selector.translate_text(ref_det.text)
+                    except Exception:
+                        logger.warning(
+                            "Track %d: re-translation failed, keeping original",
+                            track.track_id,
+                        )
+                else:
+                    track.target_text = track.source_text
 
         # Fill gaps via optical flow
         frames_dict = {idx: f for idx, f in frames}

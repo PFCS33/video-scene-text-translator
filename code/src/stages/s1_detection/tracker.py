@@ -87,7 +87,17 @@ class TextTracker:
             for det_i, det in enumerate(dets):
                 if det_i in matched_det_idxs:
                     continue
-                translated = translate_fn(det.text)
+                if target_lang:
+                    try:
+                        translated = translate_fn(det.text)
+                    except Exception:
+                        logger.warning(
+                            "Translation failed for text '%s', using source text as target",
+                            det.text,
+                        )
+                        translated = det.text
+                else:
+                    translated = det.text
                 track = TextTrack(
                     track_id=next_track_id,
                     source_text=det.text,
