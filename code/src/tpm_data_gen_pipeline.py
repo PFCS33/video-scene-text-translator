@@ -1,41 +1,105 @@
-""" TPM training data generation pipeline orchestrator: uses S1 and S2 to generate aligned canonical ROI text images."""
+"""TPM training data generation pipeline orchestrator (streaming).
+
+Uses StreamingDetectionStage (S1) and S2 to generate aligned canonical
+ROI text images.  Processes video in two passes with bounded memory:
+
+  Pass 1 (streaming): OCR detection -> grouping -> reference selection
+  Pass 2 (per-track): optical flow gap-fill -> homography -> ROI extraction
+"""
 
 from __future__ import annotations
 
 import logging
+import os
 
+import cv2
 import numpy as np
 
 from src.config import PipelineConfig
-from src.data_types import PipelineResult, TextTrack
-from src.stages.s1_detection import DetectionStage
+from src.data_types import TextTrack
+from src.stages.s1_detection.streaming_stage import StreamingDetectionStage
 from src.stages.s2_frontalization import FrontalizationStage
-from src.video_io import VideoReader, VideoWriter
-import cv2
-import os
+from src.video_io import VideoReader
 
 logger = logging.getLogger(__name__)
 
 
-class CananicalROIExtractor:
-    """Extracts aligned canonical ROIs for each track's reference frame.
-
-    Uses the homographies computed in S2 to warp each reference frame's
-    quad to a canonical rectangle, and saves these warped ROIs to disk.
-    """
+class TPMDataGenPipeline:
+    """Orchestrates streaming TPM data generation: S1 (streaming) -> S2 -> ROI extraction."""
 
     def __init__(self, config: PipelineConfig):
         self.config = config
+        self.s1 = StreamingDetectionStage(config)
+        self.s2 = FrontalizationStage(config)
 
-    def run(self, tracks: list[TextTrack], frames: dict[int, np.ndarray]) -> None:
-        """Extract and save canonical ROIs for each track."""
+    def run(self):
+        """Execute the 2-pass streaming pipeline."""
+        errors = self.config.validate()
+        if errors:
+            raise ValueError(f"Invalid config: {'; '.join(errors)}")
 
-        # Include detected text, frame range, canonical size, etc. in metadata for potential future use
+        # --- Pass 1: Streaming detection ---
+        logger.info("=== Pass 1: Streaming Detection ===")
+        logger.info("Input video: %s", self.config.input_video)
+        with VideoReader(self.config.input_video) as reader:
+            tracks = self.s1.run(reader)
+        
+        if self.config.detection.optical_flow_method == "cotracker":
+            min_frames = self.s1.tracker._get_cotracker_min_frames()
+            before = len(tracks)
+            #tracks = [
+            #    t for t in tracks
+            #    if t.detections and (max(t.detections) - min(t.detections) + 1) >= min_frames
+            #]
+            tracks = [
+                t for t in tracks
+                if t.detections and len(t.detections) >= min_frames
+            ]
+            dropped = before - len(tracks)
+            if dropped:
+                logger.info("Dropped %d tracks shorter than %d frames (CoTracker minimum)", dropped, min_frames)
+
+        if not tracks:
+            logger.warning("No text tracks found. Quitting.")
+            return None
+
+        # --- Pass 2: Per-track gap-fill + frontalization + ROI extraction ---
+        logger.info("=== Pass 2: Gap-fill + Frontalization + ROI Extraction ===")
+        with VideoReader(self.config.input_video) as reader:
+            # Fill gaps via streaming optical flow
+            logger.info("Filling gaps via optical flow (%s)", self.config.detection.optical_flow_method)
+            tracks = self.s1.fill_gaps_streaming(tracks, reader)
+
+            # Compute homographies (no frames needed)
+            logger.info("Computing frontalization homographies")
+            tracks = self.s2.run(tracks)
+
+            # Extract canonical ROIs per track
+            logger.info("Extracting canonical ROIs")
+            extraction_info = self._extract_rois(tracks, reader)
+
+        return extraction_info
+
+    def _extract_rois(
+        self,
+        tracks: list[TextTrack],
+        video_reader: VideoReader,
+    ) -> list[dict]:
+        """Extract and save canonical ROIs for each track, reading frames on demand.
+
+        Processes tracks sorted by frame range start to minimize video seeking.
+        """
         extraction_info = []
 
-        for track in tracks:
+        # Sort tracks by start frame to read video roughly forward
+        sorted_tracks = sorted(
+            tracks,
+            key=lambda t: min(t.detections.keys()) if t.detections else 0,
+        )
+
+        for track in sorted_tracks:
             ref_idx = track.reference_frame_idx
-            if ref_idx < 0 or ref_idx not in frames:
+            if ref_idx < 0 or not track.detections:
                 logger.warning(
                     "Track %d has no valid reference frame, skipping",
                     track.track_id,
@@ -43,92 +107,62 @@ class CananicalROIExtractor:
                 continue
 
             canonical_size = track.canonical_size
+            if canonical_size is None:
+                logger.warning(
+                    "Track %d has no canonical size, skipping",
+                    track.track_id,
+                )
+                continue
+
+            track_start = min(track.detections.keys())
+            track_end = max(track.detections.keys())
+
             extraction_info.append({
                 "track_id": track.track_id,
                 "detected_text": track.source_text,
                 "reference_frame_idx": ref_idx,
                 "canonical_size": canonical_size,
-                "begin_frame_idx": min(track.detections.keys()),
-                "end_frame_idx": max(track.detections.keys()),
+                "begin_frame_idx": track_start,
+                "end_frame_idx": track_end,
             })
 
-            track_output_dir = f"{self.config.output_dir}/track_{track.track_id:02d}_{track.source_text}"
+            track_output_dir = (
+                f"{self.config.output_dir}/track_{track.track_id:02d}_{track.source_text}"
+            )
             os.makedirs(track_output_dir, exist_ok=True)
 
-            # extract all frontalized ROIs and save to disk
-            for frame_idx, det in track.detections.items():
-                if not det.homography_valid:
+            # Read frames sequentially through the track's range
+            extracted_count = 0
+            for frame_idx in range(track_start, track_end + 1):
+                det = track.detections.get(frame_idx)
+                if det is None or not det.homography_valid:
+                    continue
+
+                frame = video_reader.read_frame(frame_idx)
+                if frame is None:
                     logger.warning(
-                        "Track %d frame %d has invalid homography, skipping",
+                        "Track %d frame %d: failed to read, skipping",
                         track.track_id, frame_idx,
                     )
                     continue
 
-                frame = frames[frame_idx]
-                H_to_frontal = det.H_to_frontal
                 warped_roi = cv2.warpPerspective(
                     frame,
-                    H_to_frontal,
+                    det.H_to_frontal,
                     (canonical_size[0], canonical_size[1]),
                     flags=cv2.INTER_LINEAR,
                 )
 
-                output_path = (
-                    f"{track_output_dir}/frame_{frame_idx:06d}.png"
-                )
+                output_path = f"{track_output_dir}/frame_{frame_idx:06d}.png"
                 cv2.imwrite(output_path, warped_roi)
-                #logger.info(
-                #    "Saved canonical ROI for track %d frame %d to %s",
-                #    track.track_id, frame_idx, output_path,
-                #)
+                extracted_count += 1
+
             logger.info(
-                "Extracted canonical ROIs for track %d (text: '%s', frames: %d-%d, size: %dx%d) to %s",
-                track.track_id, track.source_text, min(track.detections.keys()), max(track.detections.keys()), canonical_size[0], canonical_size[1], track_output_dir
+                "Extracted %d canonical ROIs for track %d (text: '%s', frames: %d-%d, size: %dx%d) to %s",
+                extracted_count, track.track_id, track.source_text,
+                track_start, track_end,
+                canonical_size[0], canonical_size[1],
+                track_output_dir,
             )
-        return extraction_info
-
-class TPMDataGenPipeline:
-    """Orchestrates the 5-stage video text replacement pipeline."""
-
-    def __init__(self, config: PipelineConfig):
-        self.config = config
-        self.s1 = DetectionStage(config)
-        self.s2 = FrontalizationStage(config)
-
-    def run(self) -> PipelineResult:
-        """Execute: S1 -> S2."""
-        errors = self.config.validate()
-        if errors:
-            raise ValueError(f"Invalid config: {'; '.join(errors)}")
-
-        # Load all frames into memory.
-        # NOTE: For long videos, refactor to sliding-window loading.
-        logger.info("Loading video: %s", self.config.input_video)
-        with VideoReader(self.config.input_video) as reader:
-            fps = reader.fps
-            frame_size = reader.frame_size
-            frames_list = list(reader.iter_frames())
-
-        frames: dict[int, np.ndarray] = {idx: f for idx, f in frames_list}
-        logger.info(
-            "Loaded %d frames (%.1f fps, %dx%d)",
-            len(frames), fps, frame_size[0], frame_size[1],
-        )
-
-        # S1: Detection & Selection
-        logger.info("=== Stage 1: Detection & Selection ===")
-        tracks = self.s1.run(frames_list)
-        if not tracks:
-            logger.warning("No text tracks found. Quitting.")
-            return None
-
-        # S2: Frontalization (computes homographies, writes into TextDetection)
-        logger.info("=== Stage 2: Frontalization ===")
-        tracks = self.s2.run(tracks)
-
-        # Extract canonical ROIs and save to disk
-        logger.info("=== Extracting canonical ROIs ===")
-        roi_extractor = CananicalROIExtractor(self.config)
-        extraction_info = roi_extractor.run(tracks, frames)
 
         return extraction_info
