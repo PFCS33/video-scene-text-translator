@@ -1,0 +1,1 @@
+python code/script/run_tpm_data_gen_pipeline.py --input /workspace/STRIVE_Datasets/RoboVideos-Original/database_2019_11_06_set0002.mp4 --output-dir test_output/roi_extraction_robo_video_3 --word-whitelist /workspace/STRIVE_Datasets/RoboVideos-Original/database_2019_11_06_set0002_WordList.csv --save-detected-tracks --log-level INFO
