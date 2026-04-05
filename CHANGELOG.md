@@ -1,5 +1,42 @@
 # Changelog
 
+## 2026-04-05 — TPM Data Generation Pipeline (experiment/tpm_data_gen)
+
+### Core
+- Initial implementation of TPM data generation pipeline (`tpm_data_gen_pipeline.py`, `run_tpm_data_gen_pipeline.py`) with CLI entry point, reusing Stage 1 detection and tracker
+
+### Streaming Architecture (TPM data gen pipeline only)
+- Replace all-frames-in-memory loading with a streaming 2-pass pipeline: Pass 1 streams frames for OCR detection/grouping/reference selection, Pass 2 runs per-track optical flow gap-fill + frontalization + ROI extraction (the main translation pipeline still uses the original in-memory approach)
+- Add `StreamingDetectionStage` and `StreamingTextTracker` that read frames on demand via `VideoReader`
+- Add `CoTrackerOnlineFlowTracker` wrapping the online predictor for chunked tracking with sliding-window GPU memory management
+
+### Detection Improvements
+- Add PaddleOCR as a configurable OCR backend alongside EasyOCR (`detection.ocr_backend`)
+- Filter gibberish OCR detections using `wordfreq` zipf frequency thresholds
+- Add configurable word whitelist (`--word-whitelist` CSV) to bypass gibberish filter for domain-specific text
+- Add hard filter for longest text in reference frame selection
+- Restrict quad propagation to track's frame range to reduce spurious detections
+- Add track break threshold and text similarity check for tracking
+
+### Performance
+- Skip redundant seeks for sequential frame reads in `VideoReader` by tracking decoder position
+- Replace `iter_frames()` with `read_frame()` at sample_rate intervals to avoid decoding skipped frames
+- Add tqdm progress bars to CoTracker online processing and OCR detection loops
+
+### CoTracker Online Fixes
+- Rewrite CoTracker online to stream frames forward with overlapping windows matching official `online_demo.py` pattern
+- Pad last online chunk when shorter than step×2 to prevent dropped frames
+- Keep partially occluded frames (partial occlusion on 4 corners is rarely meaningful)
+- Add `max_frame_offset` to `ReferenceSelector` to constrain reference frame to first window of each track
+
+### Configuration
+- Add `adv.yaml` with advanced configuration options for CoTracker and PaddleOCR
+- Add options to save and load detected tracks from JSON for pipeline debugging
+- Update default config path to `adv.yaml` for TPM data gen pipeline
+
+### Misc
+- Add PaddleOCR install script (`third_party/`)
+
 ## 2026-04-01 — CoTracker Integration (experiment/cotracker)
 
 - Add `flow_fill_strategy` config option: `gaps_only` (original) vs `full_propagation` (overwrite all OCR quads with optical-flow-tracked quads from reference frame)
