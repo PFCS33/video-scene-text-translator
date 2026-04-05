@@ -59,7 +59,7 @@ def main():
     args = parse_args()
 
     # Load config from YAML, or use defaults
-    config_path = args.config or str(project_root / "config" / "default.yaml")
+    config_path = args.config or str(project_root / "config" / "adv.yaml")
     config = PipelineConfig.from_yaml(config_path)
 
     # CLI overrides
