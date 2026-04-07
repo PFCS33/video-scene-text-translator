@@ -1,11 +1,3 @@
 {
-  "hooks": {
-    "_comment": "SessionEnd hook is disabled. Remove the underscore prefix from _SessionEnd to enable it.",
-    "_SessionEnd": [
-      {
-        "matcher": "",
-        "command": "bash .claude/hooks/session-end.sh"
-      }
-    ]
-  }
+  "hooks": {}
 }
