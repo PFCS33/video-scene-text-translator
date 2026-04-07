@@ -68,10 +68,15 @@ class SyntheticAugmentor:
         ref = batch["ref_image"].to(self.device)  # (B, 3, H, W)
         B = ref.shape[0]
 
-        gt_sigma_x = torch.empty(B, n_neighbors, device=self.device).uniform_(0.5, 4.0)
-        gt_sigma_y = torch.empty(B, n_neighbors, device=self.device).uniform_(0.5, 4.0)
+        # Distribution chosen to match real video blur differences between
+        # consecutive frames. Wide ranges (the original paper's [0.5, 4.0]
+        # for sigma) train the model in a regime that doesn't appear in
+        # Stage 2 self-supervised data, leaving Stage 2 to relearn from a
+        # weak signal.
+        gt_sigma_x = torch.empty(B, n_neighbors, device=self.device).uniform_(0.3, 1.8)
+        gt_sigma_y = torch.empty(B, n_neighbors, device=self.device).uniform_(0.3, 1.8)
         gt_rho = torch.empty(B, n_neighbors, device=self.device).uniform_(-math.pi, math.pi)
-        gt_w = torch.empty(B, n_neighbors, device=self.device).uniform_(-0.8, 0.8)
+        gt_w = torch.empty(B, n_neighbors, device=self.device).uniform_(-0.4, 0.4)
 
         # Generate blurred versions of reference as synthetic neighbors
         synth_neighbors = []

@@ -79,6 +79,17 @@ class BPNDataset(Dataset):
 
     def _build_samples(self, data_root, video_indices, max_tracks,
                        min_length, stride, seed):
+        """Build training samples.
+
+        Each sample is constructed with the canonical reference frame (from
+        s1_tracks.json `reference_frame_idx`) at position 0, followed by
+        n_neighbors consecutive target frames drawn via a sliding window
+        over the rest of the track. This ensures every sample uses the
+        sharpest/most-frontal frame as the reference, which is what the
+        BPN expects.
+        """
+        import json as _json
+
         data_root = Path(data_root)
 
         # Discover all video directories that contain track_* subdirs
@@ -97,6 +108,15 @@ class BPNDataset(Dataset):
         rng = random.Random(seed)
 
         for vdir in video_dirs:
+            # Load track metadata to get canonical reference frame per track
+            tracks_json = vdir / "s1_tracks.json"
+            ref_idx_by_tid: dict[int, int] = {}
+            if tracks_json.exists():
+                with open(tracks_json) as f:
+                    track_meta = _json.load(f)
+                for t in track_meta:
+                    ref_idx_by_tid[int(t["track_id"])] = int(t["reference_frame_idx"])
+
             track_dirs = sorted([
                 d for d in vdir.iterdir()
                 if d.is_dir() and d.name.startswith("track_")
@@ -114,11 +134,39 @@ class BPNDataset(Dataset):
                 if len(frames) < max(min_length, self.window):
                     continue
 
-                # Generate samples: sliding window with stride
                 frame_paths = [str(f) for f in frames]
                 track_id = str(tdir)
-                for start in range(0, len(frames) - self.window + 1, stride):
-                    self.samples.append((frame_paths, start))
+
+                # Resolve canonical reference frame: parse track id from
+                # folder name (track_<id>_<text>) and look it up.
+                ref_pos: int | None = None
+                try:
+                    tid = int(tdir.name.split("_")[1])
+                    ref_frame_idx = ref_idx_by_tid.get(tid)
+                    if ref_frame_idx is not None:
+                        ref_filename = f"frame_{ref_frame_idx:06d}"
+                        for i, f in enumerate(frames):
+                            if f.stem == ref_filename:
+                                ref_pos = i
+                                break
+                except (ValueError, IndexError):
+                    pass
+
+                if ref_pos is None:
+                    # Fallback: no metadata, use first frame as reference
+                    ref_pos = 0
+
+                # Generate samples: ref frame at position 0, then sliding
+                # windows of n_neighbors consecutive target frames from
+                # the rest of the track (excluding the reference itself).
+                target_positions = [i for i in range(len(frames)) if i != ref_pos]
+                n = self.n_neighbors
+                if len(target_positions) < n:
+                    continue
+
+                for start in range(0, len(target_positions) - n + 1, stride):
+                    window_positions = [ref_pos] + target_positions[start:start + n]
+                    self.samples.append((frame_paths, window_positions))
                     self.sample_track_ids.append(track_id)
 
     def _preload_cache(self):
@@ -134,9 +182,9 @@ class BPNDataset(Dataset):
         """
         # Collect all unique paths referenced by samples
         unique_paths: set[str] = set()
-        for frame_paths, start in self.samples:
-            for p in frame_paths[start:start + self.window]:
-                unique_paths.add(p)
+        for frame_paths, window_positions in self.samples:
+            for pos in window_positions:
+                unique_paths.add(frame_paths[pos])
 
         sorted_paths = sorted(unique_paths)
         path_to_idx = {p: i for i, p in enumerate(sorted_paths)}
@@ -153,15 +201,10 @@ class BPNDataset(Dataset):
         total_gb = self._image_data.nbytes / 1e9
         print(f"Cache complete ({n_unique} images, {total_gb:.1f} GB)")
 
-        # Convert samples from (path_list, start) to (index_array, start)
-        # so __getitem__ uses integer indexing into the contiguous array.
-        # Only convert the window slice that's actually used per sample.
+        # Convert samples from (path_list, window_positions) to int index arrays
         new_samples = []
-        for frame_paths, start in self.samples:
-            window_indices = [
-                path_to_idx[frame_paths[start + i]]
-                for i in range(self.window)
-            ]
+        for frame_paths, window_positions in self.samples:
+            window_indices = [path_to_idx[frame_paths[pos]] for pos in window_positions]
             new_samples.append(np.array(window_indices, dtype=np.int32))
         self.samples = new_samples
 
@@ -178,20 +221,21 @@ class BPNDataset(Dataset):
     def get_track_window(self, sample_idx: int, num_targets: int) -> tuple[torch.Tensor, torch.Tensor]:
         """Return (ref, targets) tensors from the same track as sample_idx.
 
-        ref: (3, H, W) — first frame of the sample's window (the reference)
-        targets: (T, 3, H, W) where T <= num_targets — consecutive frames
-                 from the same track immediately following the reference
+        ref: (3, H, W) — canonical reference frame for the sample's track
+        targets: (T, 3, H, W) where T <= num_targets — frames randomly
+                 sampled from across the entire track (excluding the
+                 reference). Random rather than consecutive because 16
+                 consecutive video frames span only ~0.5s and look almost
+                 identical, making the visualization uninformative.
 
-        Used by evaluation to visualize many target frames at once. The model
-        can still only process n_neighbors targets per forward pass; callers
-        should run it in sliding chunks.
+        Used by evaluation to visualize diverse target frames at once.
+        The model can still only process n_neighbors targets per forward
+        pass; callers should run it in sliding chunks.
         """
         track_id = self.sample_track_ids[sample_idx]
 
         # Collect all unique frame keys belonging to this track, in order
         if self.cache_in_ram:
-            # Each sample is an int index array; flatten + dedupe across all
-            # samples sharing the same track_id
             seen: set[int] = set()
             ordered: list[int] = []
             for i, tid in enumerate(self.sample_track_ids):
@@ -203,18 +247,22 @@ class BPNDataset(Dataset):
                         seen.add(ki)
                         ordered.append(ki)
             ordered.sort()  # contiguous integer range within a track
-            # Reference = first frame of the requested sample
             ref_key = int(self.samples[sample_idx][0])
         else:
-            # Non-cached: samples are (frame_paths, start). All samples in a
-            # track share the same frame_paths list, so just grab it once.
-            frame_paths, start = self.samples[sample_idx]
-            ordered = list(frame_paths)  # already sorted by build order
-            ref_key = frame_paths[start]
+            frame_paths, window_positions = self.samples[sample_idx]
+            ordered = list(frame_paths)
+            ref_key = frame_paths[window_positions[0]]
 
-        # Find ref position in ordered list, then take up to num_targets after
-        ref_pos = ordered.index(ref_key)
-        target_keys = ordered[ref_pos + 1 : ref_pos + 1 + num_targets]
+        # Pick `num_targets` random frames from the track, excluding ref.
+        # Sort the result so visualization rows still appear in temporal order.
+        candidates = [k for k in ordered if k != ref_key]
+        if len(candidates) <= num_targets:
+            target_keys = candidates
+        else:
+            target_keys = random.sample(candidates, num_targets)
+        # Sort by position in `ordered` so the visualization is time-ordered
+        pos_map = {k: i for i, k in enumerate(ordered)}
+        target_keys.sort(key=lambda k: pos_map[k])
 
         ref = self._load_image(ref_key)
         targets = torch.stack([self._load_image(k) for k in target_keys]) \
@@ -235,10 +283,9 @@ class BPNDataset(Dataset):
             # sample is np.array of integer indices
             imgs = [self._load_image(int(i)) for i in sample]
         else:
-            # sample is (frame_paths, start)
-            frame_paths, start = sample
-            window_paths = frame_paths[start:start + self.window]
-            imgs = [self._load_image(p) for p in window_paths]
+            # sample is (frame_paths, window_positions)
+            frame_paths, window_positions = sample
+            imgs = [self._load_image(frame_paths[pos]) for pos in window_positions]
 
         # First image is reference, rest are neighbors
         ref = imgs[0]                          # (3, H, W)

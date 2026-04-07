@@ -87,10 +87,10 @@ class BPNLoss(nn.Module):
         # ~[-0.8, 0.8]) gets dominated by sigma (range ~[0.5, 4]) and rho
         # (range ~[-pi, pi]), and the network learns to predict w=0.
         param_scales = {
-            "sigma_x": 4.0,
-            "sigma_y": 4.0,
+            "sigma_x": 1.8,
+            "sigma_y": 1.8,
             "rho": 3.14159,
-            "w": 0.8,
+            "w": 0.4,
         }
         psi_loss = torch.tensor(0.0, device=ref_image.device)
         if self.use_psi_loss and gt_params is not None:
