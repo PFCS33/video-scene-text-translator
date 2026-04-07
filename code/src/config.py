@@ -76,6 +76,18 @@ class PropagationConfig:
     clip_limit: float = 2.0
     blend_blur_kernel: int = 5
 
+    # Lighting Correction Module (TPM/LCM) — applied per-frame when each
+    # detection has an inpainted_background populated. Falls back to the
+    # legacy histogram-matching path when backgrounds are missing.
+    use_lcm: bool = False
+    lcm_eps: float = 1e-3
+    lcm_ratio_clip_min: float = 0.5
+    lcm_ratio_clip_max: float = 2.0
+    lcm_ratio_blur_ksize: int = 9
+    lcm_use_log_domain: bool = True
+    lcm_temporal_alpha: float = 1.0  # 1.0 = no temporal smoothing
+    lcm_neighbor_self_weight: float = 2.0
+
 
 @dataclass
 class RevertConfig:
