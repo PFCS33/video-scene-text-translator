@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-04-06 — AnyText2 Integration (feat/anytext2-integration)
+
+### Stage A Model
+- Integrate AnyText2 (ICLR 2025) as a real Stage A text editing backend, replacing the placeholder for cross-language scene text replacement
+- `AnyText2Editor` subclass of `BaseTextEditor` communicates with an external AnyText2 Gradio server via `gradio_client`
+- Supports style-preserving editing: uses "Mimic From Image" font extraction and auto-detected text color from the ROI
+- Handles ROI dimension clamping (256-1024px range), auto-resize back to original dimensions
+
+### Configuration
+- Add `text_editor.server_url`, `server_timeout`, and AnyText2-specific params (`ddim_steps`, `cfg_scale`, `strength`, `img_count`) to `TextEditorConfig`
+- `adv.yaml` defaults to `backend: "anytext2"` with server URL pre-configured
+- `default.yaml` keeps `backend: "placeholder"` for offline testing
+
+### Testing
+- 15 new unit tests for AnyText2Editor: color extraction, dimension clamping, edge cases, mocked Gradio calls, S3 integration
+- All tests run without AnyText2 server (fully mocked)
+
+### Misc
+- Add `third_party/install_anytext2.sh` for setting up AnyText2 server (clone, conda env, model download)
+- Add `gradio_client` to `requirements/base.txt`
+
 ## 2026-04-05 — TPM Data Generation Pipeline (experiment/tpm_data_gen)
 
 ### Core
