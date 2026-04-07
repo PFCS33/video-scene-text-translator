@@ -110,7 +110,7 @@ class TestPropagationRun:
             canonical_size=(180, 80),
             edited_roi=edited_roi,
         )
-        with patch("src.stages.s4_propagation.cv2.warpPerspective",
+        with patch("src.stages.s4_propagation.stage.cv2.warpPerspective",
                     wraps=cv2.warpPerspective) as mock_warp:
             result = stage.run([track], {0: frame})
 
