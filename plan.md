@@ -74,5 +74,14 @@ Create an `AnyText2Editor` subclass of `BaseTextEditor` that communicates with A
 - [x] Step 5: Add `gradio_client` to `requirements/base.txt`
 - [x] Step 6: Write unit tests with mocked Gradio client (15 tests, all passing)
 - [x] Step 7: Write `third_party/install_anytext2.sh` setup script
-- [ ] Step 8: Integration test with live server (manual, with Hebin)
+- [x] Step 8: E2E integration test on remote GPU machine
+  - [x] 8a: Create venv with `uv`, install PyTorch (CUDA 13.0)
+  - [x] 8b: Install base requirements + EasyOCR
+  - [x] 8c: Install PaddlePaddle GPU + PaddleOCR
+  - [x] 8d: Clone CoTracker (HTTPS), install, download checkpoints
+  - [x] 8e: Install gradio_client, verify AnyText2 server reachability
+  - [x] 8f: Run pytest to verify setup (160 passing)
+  - [x] 8g: Generated synthetic test video + downloaded Pexels stock video
+  - [x] 8h: Pipeline ran end-to-end with adv.yaml — all 5 stages completed
+  - Fixes applied during e2e: RGBA mask, quoted text_prompt, submit/result API, gallery parse, CoTracker relative paths
 - [x] Step 9: Update CHANGELOG.md with AnyText2 integration entry
