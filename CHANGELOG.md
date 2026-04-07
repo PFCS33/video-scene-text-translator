@@ -10,12 +10,22 @@
 
 ### Configuration
 - Add `text_editor.server_url`, `server_timeout`, and AnyText2-specific params (`ddim_steps`, `cfg_scale`, `strength`, `img_count`) to `TextEditorConfig`
-- `adv.yaml` defaults to `backend: "anytext2"` with server URL pre-configured
+- `adv.yaml` defaults to `backend: "anytext2"` (server URL must be set per-environment)
 - `default.yaml` keeps `backend: "placeholder"` for offline testing
 
 ### Testing
 - 20 new unit tests for AnyText2Editor: color extraction, dimension clamping, edge cases, mocked Gradio calls, config validation, S3 integration
 - All tests run without AnyText2 server (fully mocked)
+
+### E2E Integration Fixes (2026-04-07)
+- Fix RGBA mask format: AnyText2 reads edit region from alpha channel, not RGB
+- Fix text_prompt quoting: AnyText2's `modify_prompt()` regex requires literal `"text"` wrapping
+- Fix Gradio client API: use `submit()` + `job.result(timeout=...)` for gradio_client v2.4
+- Fix gallery result parsing: handle image entry as string path (not nested dict)
+- Fix CoTracker checkpoint paths: use `../third_party/...` for scripts running from `code/`
+- Add connection timeout to Gradio `Client()` constructor via `httpx_kwargs`
+- Send `m1` mimic image for proper font style extraction in "Mimic From Image" mode
+- Fix typo in diffusion prompt (`"supper"` → `"super"`)
 
 ### Misc
 - Add `third_party/install_anytext2.sh` for setting up AnyText2 server (clone, conda env, model download)
