@@ -82,10 +82,22 @@ class BPNLoss(nn.Module):
         losses["temporal"] = temporal_loss
 
         # -- Parameter regression loss L_psi (Stage 1 only) --
+        # Each parameter is normalized by its natural scale so all four
+        # contribute comparable gradient magnitudes. Without this, w (range
+        # ~[-0.8, 0.8]) gets dominated by sigma (range ~[0.5, 4]) and rho
+        # (range ~[-pi, pi]), and the network learns to predict w=0.
+        param_scales = {
+            "sigma_x": 4.0,
+            "sigma_y": 4.0,
+            "rho": 3.14159,
+            "w": 0.8,
+        }
         psi_loss = torch.tensor(0.0, device=ref_image.device)
         if self.use_psi_loss and gt_params is not None:
             for key in ("sigma_x", "sigma_y", "rho", "w"):
-                psi_loss = psi_loss + ((pred_params[key] - gt_params[key]) ** 2).mean()
+                scale = param_scales[key]
+                diff = (pred_params[key] - gt_params[key]) / scale
+                psi_loss = psi_loss + (diff ** 2).mean()
             psi_loss = psi_loss / 4.0
         losses["psi"] = psi_loss
 

@@ -9,6 +9,7 @@ Architecture from STRIVE Section 3.2:
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torchvision.models import resnet18, ResNet18_Weights
 
 
@@ -54,21 +55,23 @@ class BPN(nn.Module):
         self.gap = nn.AdaptiveAvgPool2d(1)
 
         # FC head: 512 -> 256 -> 4N
-        self.head = nn.Sequential(
-            nn.Linear(512, 256),
-            nn.ReLU(inplace=True),
-            nn.Linear(256, self.n_params),
-        )
-
+        self.fc1 = nn.Linear(512, 256)
+        self.fc2 = nn.Linear(256, self.n_params)
         self._init_head()
 
     def _init_head(self):
-        """Initialize head weights for near-identity output at start."""
-        for m in self.head.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.kaiming_normal_(m.weight, nonlinearity="relu")
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
+        """Initialize head so the network starts producing near-identity blur.
+
+        - fc1: standard Kaiming init (ReLU follows)
+        - fc2: very small weights + zero bias so raw outputs start ~0.
+          This means tanh/softplus operate in their linear regime where
+          gradients flow freely. Otherwise large initial outputs saturate
+          tanh and the network gets stuck predicting constant values.
+        """
+        nn.init.kaiming_normal_(self.fc1.weight, nonlinearity="relu")
+        nn.init.zeros_(self.fc1.bias)
+        nn.init.normal_(self.fc2.weight, std=0.001)
+        nn.init.zeros_(self.fc2.bias)
 
     def forward(self, images: torch.Tensor) -> dict[str, torch.Tensor]:
         """
@@ -85,7 +88,7 @@ class BPN(nn.Module):
         """
         feat = self.features(images)
         feat = self.gap(feat).flatten(1)  # (B, 512)
-        params = self.head(feat)  # (B, 4N)
+        params = self.fc2(F.relu(self.fc1(feat)))  # (B, 4N)
 
         # Reshape to (B, N, 4) then split
         params = params.view(-1, self.n_neighbors, 4)
@@ -103,6 +106,3 @@ class BPN(nn.Module):
             "w": w,
         }
 
-
-# Need F for activations in forward
-import torch.nn.functional as F
