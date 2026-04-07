@@ -26,8 +26,6 @@ logger = logging.getLogger(__name__)
 # Clamp ROI dimensions to AnyText2's accepted range.
 _MIN_DIM = 256
 _MAX_DIM = 1024
-# If clamping would distort aspect ratio beyond this factor, warn and allow it.
-_MAX_ASPECT_DISTORTION = 2.0
 
 
 class AnyText2Editor(BaseTextEditor):
@@ -66,7 +64,10 @@ class AnyText2Editor(BaseTextEditor):
             "Connecting to AnyText2 server at %s (timeout=%ds)", url, timeout,
         )
         try:
-            self._client = Client(url)
+            self._client = Client(
+                url,
+                httpx_kwargs={"timeout": timeout},
+            )
         except Exception as exc:
             raise ConnectionError(
                 f"Cannot connect to AnyText2 server at {url}. "
@@ -221,7 +222,7 @@ class AnyText2Editor(BaseTextEditor):
             eta=0,
             a_prompt=(
                 "best quality, extremely detailed, 4k, HD, "
-                "supper legible text, clear text edges, clear strokes, "
+                "super legible text, clear text edges, clear strokes, "
                 "neat writing, no watermarks"
             ),
             n_prompt=(
