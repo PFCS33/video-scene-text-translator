@@ -66,7 +66,7 @@ Detects text in video frames, tracks detections across frames, selects the best 
 
 1. **Detect** — Runs the configured OCR backend (EasyOCR or PaddleOCR, set via `detection.ocr_backend`) on every Nth frame (`frame_sample_rate`). Filters detections by OCR confidence and minimum text area. Computes quality metrics per detection: sharpness (Laplacian variance), contrast (Otsu interclass variance), frontality (quad-to-bbox area ratio), and a weighted composite score.
 
-2. **Track** — Groups detections across frames into `TextTrack` objects via greedy IoU matching (threshold 0.3). Unmatched detections start new tracks. Translates source text via googletrans on track creation.
+2. **Track** — Groups detections across frames into `TextTrack` objects via greedy IoU matching (threshold 0.3). Unmatched detections start new tracks. Translates source text via deep-translator (GoogleTranslator with MyMemory fallback) on track creation.
 
 3. **Select reference** — Picks the best frame per track for editing. Hard pre-filters: OCR confidence >= 0.7, top-K by sharpness. Then scores remaining candidates: `0.7 * contrast + 0.3 * frontality`. After selection, updates `source_text` and `target_text` from the reference frame's OCR (more reliable than the first detection's OCR).
 
@@ -147,7 +147,7 @@ Warps the reference frame's text region to canonical frontal space, passes it th
 
 3. Fallback (no homography): crops raw bbox region from the reference frame.
 
-4. Passes the ROI to `BaseTextEditor.edit_text(roi, target_text)`, which returns an edited ROI with target text rendered. Currently uses `PlaceholderTextEditor` (cv2.putText); real Stage A models (RS-STE, AnyText2) to be integrated via the `BaseTextEditor` ABC.
+4. Passes the ROI to `BaseTextEditor.edit_text(roi, target_text)`, which returns an edited ROI with target text rendered. Backends: `placeholder` (cv2.putText), `anytext2` (style-preserving via Gradio API). Configured via `text_editor.backend` in YAML.
 
 5. Stores result in `track.edited_roi`.
 
@@ -233,13 +233,123 @@ Output:
                                              # same shape as input frames, text replaced
 ```
 
+## Environment Setup
+
+### Prerequisites
+- Conda (Miniconda, Miniforge, or Anaconda)
+- NVIDIA GPU with CUDA 12.x driver (`nvidia-smi` to verify)
+- AnyText2 Gradio server running (managed separately — see below)
+
+### 1. Create conda environment
+
+```bash
+conda create -n vc_final python=3.11 -y
+conda activate vc_final
+```
+
+### 2. Install base dependencies
+
+```bash
+cd code
+pip install -r requirements/base.txt
+```
+
+### 3. Install PyTorch (GPU)
+
+Match the CUDA index to your driver version. Check with `nvidia-smi`:
+
+| Driver CUDA | PyTorch index |
+|-------------|---------------|
+| 12.4–12.8   | `cu124`       |
+| 13.0+       | `cu130`       |
+
+```bash
+# Example for CUDA 12.4–12.8:
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+```
+
+Verify: `python -c "import torch; print(torch.cuda.is_available())"`
+
+### 4. Install EasyOCR
+
+```bash
+pip install easyocr
+```
+
+### 5. Install PaddlePaddle + PaddleOCR
+
+PaddlePaddle GPU must also match your CUDA driver:
+
+| Driver CUDA | PaddlePaddle index |
+|-------------|-------------------|
+| 12.4–12.8   | `cu126`           |
+| 13.0+       | `cu130`           |
+
+```bash
+# Example for CUDA 12.4–12.8:
+pip install paddlepaddle-gpu==3.3.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
+pip install paddleocr
+```
+
+> **Gotcha:** PaddlePaddle GPU built for CUDA 13.0 will silently fall back to CPU on a 12.x driver, then crash with a OneDNN `NotImplementedError`. Always match the CUDA index to your driver.
+
+### 6. Install CoTracker
+
+```bash
+cd third_party
+git clone https://github.com/facebookresearch/co-tracker.git
+cd co-tracker
+pip install -e .
+
+# Download checkpoints
+mkdir -p checkpoints && cd checkpoints
+wget https://huggingface.co/facebook/cotracker3/resolve/main/scaled_offline.pth
+wget https://huggingface.co/facebook/cotracker3/resolve/main/scaled_online.pth
+cd ../../..
+```
+
+### 7. Install gradio_client (for AnyText2)
+
+```bash
+pip install "gradio_client>=1.5.0"
+```
+
+### 8. AnyText2 server
+
+AnyText2 runs in a **separate** conda env (Python 3.10) to avoid dependency conflicts.
+See [`third_party/install_anytext2.sh`](third_party/install_anytext2.sh) for setup instructions.
+
+Once the server is running, set the URL in your config YAML:
+
+```yaml
+text_editor:
+  backend: "anytext2"
+  server_url: "http://<host>:<port>/"
+```
+
+### Quick verification
+
+```bash
+conda activate vc_final
+cd code
+python -m pytest tests/ -v          # All tests should pass
+ruff check .                        # Lint check
+```
+
 ## Usage
 
 ```bash
 # Activate conda environment
-eval "$(/opt/miniconda3/bin/conda shell.bash hook)" && conda activate vc_final
+conda activate vc_final
+cd code
 
-# Run the pipeline
+# Run the pipeline (advanced config: CoTracker + PaddleOCR + AnyText2)
+PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True python scripts/run_pipeline.py \
+  --config config/adv.yaml \
+  --input <video> --output <out> \
+  --source-lang en --target-lang es
+
+# Run with default config (Farneback + EasyOCR + placeholder editor)
 python scripts/run_pipeline.py --input <video> --output <out> --source-lang en --target-lang es
 
 # Run tests
@@ -271,13 +381,14 @@ code/
     models/
       base_text_editor.py           # ABC for Stage A models
       placeholder_editor.py         # cv2.putText placeholder
+      anytext2_editor.py            # AnyText2 via Gradio API
     utils/
       geometry.py                   # Homography, quad metrics, canonical rect
       image_processing.py           # Sharpness, contrast, histogram matching
       optical_flow.py               # Farneback + Lucas-Kanade wrappers
   config/
     default.yaml                    # All configurable parameters
-  tests/                            # 129 unit + integration tests
+  tests/                            # 162 unit + integration tests
   scripts/
     run_pipeline.py                 # CLI entry point
 ```
