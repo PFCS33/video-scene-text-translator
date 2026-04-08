@@ -88,6 +88,12 @@ class PropagationConfig:
     lcm_temporal_alpha: float = 1.0  # 1.0 = no temporal smoothing
     lcm_neighbor_self_weight: float = 2.0
 
+    # Background inpainter for LCM. Only loaded when use_lcm=True.
+    # Backends: "srnet" (lksshw/SRNet wrapper) or "none".
+    inpainter_backend: str = "none"
+    inpainter_checkpoint_path: str | None = None
+    inpainter_device: str = "cuda"
+
 
 @dataclass
 class RevertConfig:

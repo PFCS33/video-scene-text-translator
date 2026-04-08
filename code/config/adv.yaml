@@ -57,6 +57,12 @@ propagation:
   histogram_bins: 256
   clip_limit: 2.0
   blend_blur_kernel: 5
+  use_lcm: true
+  # Background inpainter for LCM. Only loaded when use_lcm=True.
+  # Backends: "srnet" (lksshw/SRNet wrapper) or "none".
+  inpainter_backend: "srnet"
+  inpainter_checkpoint_path: "third_party/SRNet/checkpoints/trained_final_5M_.model"
+  inpainter_device: "cuda"
 
 revert:
   blend_border_size: 3
