@@ -20,5 +20,5 @@ else
     # create checkpoints/bpn directory if it doesn't exist
     mkdir -p checkpoints/bpn
     # download the checkpoint using gdown
-    gdown https://drive.google.com/uc?id=1ZUDMCDw6tJka-0Dxkhev2bRvkkLMcKpv -O checkpoints/bpn/bpn_v0.pth
+    gdown https://drive.google.com/uc?id=1ZUDMCDw6tJka-0Dxkhev2bRvkkLMcKpv -O checkpoints/bpn/bpn_v0.pt
 fi
