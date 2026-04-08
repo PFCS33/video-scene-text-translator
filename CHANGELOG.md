@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-04-07 — AnyText2 ROI Quality Fix (feat/anytext2-integration)
+
+### ROI Resolution & Mask
+- Upscale small ROIs so `max(h,w) >= 512` (AnyText2's training resolution) — previously sent at native size (often 256×256 or smaller)
+- Pad all dimensions to multiples of 64, matching AnyText2's SD VAE+U-Net architecture — prevents server-side silent pixel cropping via `resize_image()`
+- Localize edit mask to the actual text content rectangle (`alpha=255`), padding regions are now anchored (`alpha=0`) — fixes black corner artifacts caused by the model regenerating replicated-border padding
+- Crop result to content region before downscaling back to original ROI dimensions
+
+### Configuration
+- Add `text_editor.anytext2_min_gen_size` (default 512, range 256–1024) to control the upscale quality floor
+
+### Testing
+- Replace 4 old `TestClampDimensions` tests with 12 `TestPrepareRoi` tests covering: upscale, 64-alignment, content rect integrity, border replication, min/max clamping, extreme aspect ratios
+- Add `test_localized_mask_written` verifying mask covers only content region
+- 29 AnyText2 tests passing, lint clean
+
 ## 2026-04-07 — Replace googletrans with deep-translator (feat/anytext2-integration)
 
 ### Translation Backend
