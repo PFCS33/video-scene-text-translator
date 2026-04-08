@@ -47,9 +47,10 @@ class PropagationStage:
                 neighbor_self_weight=self.config.lcm_neighbor_self_weight,
             )
         )
-        # Inpainter is loaded lazily on first use to avoid paying the model
-        # load cost when LCM is disabled.
+        # Inpainter and BPN are loaded lazily on first use to avoid paying
+        # the model load cost when LCM/BPN are disabled.
         self._inpainter: BaseBackgroundInpainter | None = None
+        self._bpn = None  # type: ignore[assignment]
 
     def _get_inpainter(self) -> BaseBackgroundInpainter | None:
         """Lazy-load the configured background inpainter, or None if disabled."""
@@ -74,6 +75,30 @@ class PropagationStage:
             )
             return self._inpainter
         raise ValueError(f"Unknown inpainter_backend: {backend!r}")
+
+    def _get_bpn(self):
+        """Lazy-load the BPN predictor, or None if disabled."""
+        if self._bpn is not None:
+            return self._bpn
+        if not self.config.use_bpn:
+            return None
+        ckpt = self.config.bpn_checkpoint_path
+        if not ckpt:
+            logger.warning(
+                "S4: use_bpn=True but no bpn_checkpoint_path configured; "
+                "BPN will be skipped"
+            )
+            return None
+        from .bpn_predictor import BPNPredictor
+        logger.info("S4: loading BPN from %s", ckpt)
+        self._bpn = BPNPredictor(
+            checkpoint_path=ckpt,
+            n_neighbors=self.config.bpn_n_neighbors,
+            image_size=tuple(self.config.bpn_image_size),
+            kernel_size=self.config.bpn_kernel_size,
+            device=self.config.bpn_device,
+        )
+        return self._bpn
 
     def propagate_to_frame(
         self,
@@ -140,8 +165,9 @@ class PropagationStage:
         logger.info("S4: Propagating edited ROIs across frames")
         propagated: dict[int, list[PropagatedROI]] = {}
 
-        # Lazy-load inpainter once for the whole run
+        # Lazy-load inpainter and BPN once for the whole run
         inpainter = self._get_inpainter() if self.config.use_lcm else None
+        bpn = self._get_bpn() if self.config.use_bpn else None
 
         for track in tracks:
             if track.edited_roi is None:
@@ -152,50 +178,86 @@ class PropagationStage:
 
             self.lcm.reset()  # clear EMA buffer between tracks
 
-            # Compute reference background once per track if LCM is enabled.
-            # We need the reference detection's frontalized ROI to feed the
-            # inpainter; that requires the reference frame to be available.
+            # ----- Reference background (LCM only) -----
             ref_det = track.detections.get(track.reference_frame_idx)
             ref_background: np.ndarray | None = None
-            if (inpainter is not None and ref_det is not None
-                    and ref_det.inpainted_background is None):
+            ref_canonical: np.ndarray | None = None
+            if ref_det is not None:
                 ref_frame = frames.get(track.reference_frame_idx)
                 if ref_frame is not None:
                     ref_canonical = self._warp_to_canonical(track, ref_det, ref_frame)
-                    if ref_canonical is not None and ref_canonical.size > 0:
-                        ref_det.inpainted_background = inpainter.inpaint(ref_canonical)
-            if ref_det is not None:
+                if (inpainter is not None and ref_canonical is not None
+                        and ref_canonical.size > 0
+                        and ref_det.inpainted_background is None):
+                    ref_det.inpainted_background = inpainter.inpaint(ref_canonical)
                 ref_background = ref_det.inpainted_background
+
+            # ----- First pass: build per-detection lit ROIs -----
+            # Each entry: (frame_idx, det, target_canonical, lit_edited_roi)
+            per_det_outputs: list[tuple[int, object, np.ndarray, np.ndarray]] = []
 
             for frame_idx, det in track.detections.items():
                 frame = frames.get(frame_idx)
                 if frame is None:
                     continue
 
-                target_roi = self._warp_to_canonical(track, det, frame)
-                if target_roi is None or target_roi.size == 0:
+                target_canonical = self._warp_to_canonical(track, det, frame)
+                if target_canonical is None or target_canonical.size == 0:
                     continue
 
                 # Inpaint this detection's background on demand if LCM is on
                 if (inpainter is not None
                         and det.inpainted_background is None):
-                    det.inpainted_background = inpainter.inpaint(target_roi)
+                    det.inpainted_background = inpainter.inpaint(target_canonical)
 
                 # Choose LCM if available, else fall back to histogram matching
                 if (self.config.use_lcm
                         and ref_background is not None
                         and det.inpainted_background is not None):
-                    adapted_roi = self.lcm.correct(
+                    lit_edited = self.lcm.correct(
                         edited_roi=track.edited_roi,
                         ref_background=ref_background,
                         target_background=det.inpainted_background,
                     )
                 else:
-                    adapted_roi = self.propagate_to_frame(
-                        track.edited_roi, target_roi
+                    lit_edited = self.propagate_to_frame(
+                        track.edited_roi, target_canonical
                     )
-                alpha = self._create_alpha_mask(adapted_roi.shape[:2])
 
+                per_det_outputs.append((frame_idx, det, target_canonical, lit_edited))
+
+            if not per_det_outputs:
+                continue
+
+            # ----- Second pass: optional BPN differential blur -----
+            # BPN reads the original ref + target canonicals to predict
+            # how blurry each target is relative to the reference, then
+            # we apply that blur to each target's lit_edited ROI so the
+            # final composite matches the target's sharpness.
+            if bpn is not None and ref_canonical is not None:
+                target_canonicals = [t for (_, _, t, _) in per_det_outputs]
+                try:
+                    params = bpn.predict_params(
+                        ref_canonical=ref_canonical,
+                        target_canonicals=target_canonicals,
+                    )
+                    new_outputs = []
+                    for i, (frame_idx, det, target_canonical, lit_edited) in enumerate(per_det_outputs):
+                        blurred = bpn.apply_blur(
+                            lit_edited,
+                            params["sigma_x"][i],
+                            params["sigma_y"][i],
+                            params["rho"][i],
+                            params["w"][i],
+                        )
+                        new_outputs.append((frame_idx, det, target_canonical, blurred))
+                    per_det_outputs = new_outputs
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("S4: BPN inference failed (%s); skipping", e)
+
+            # ----- Emit PropagatedROIs -----
+            for frame_idx, det, _, adapted_roi in per_det_outputs:
+                alpha = self._create_alpha_mask(adapted_roi.shape[:2])
                 prop_roi = PropagatedROI(
                     frame_idx=frame_idx,
                     track_id=track.track_id,
@@ -203,9 +265,6 @@ class PropagationStage:
                     alpha_mask=alpha,
                     target_quad=det.quad,
                 )
-
-                if frame_idx not in propagated:
-                    propagated[frame_idx] = []
-                propagated[frame_idx].append(prop_roi)
+                propagated.setdefault(frame_idx, []).append(prop_roi)
 
         return propagated
