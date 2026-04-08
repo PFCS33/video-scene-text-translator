@@ -1,0 +1,83 @@
+# BPN Training Configuration
+# Usage: python -m src.models.bpn.train --config src/models/bpn/config.yaml
+
+stage: 1  # 1=supervised (synthetic blur), 2=self-supervised (real data)
+seed: 42
+device: cuda
+epochs: 30
+save_every: 1
+blur_kernel_size: 41
+
+# Checkpoint
+checkpoint_dir: checkpoints/bpn
+# resume: checkpoints/bpn/bpn_stage1_best.pt  # uncomment to resume
+
+# Data
+data:
+  data_root: /workspace/tpm_dataset
+  n_neighbors: 3
+  image_size: [64, 128]  # H, W (source ROIs are ~32x71, larger is just upsampling)
+  batch_size: 512
+  num_workers: 2   # keep low with cache_in_ram to avoid OOM (each worker forks ~2-3GB overhead)
+  cache_in_ram: true  # preload all images into RAM (~87GB at 64x128) to eliminate disk I/O
+
+  video_indices_train:
+    - roi_extraction_robo_video_1
+    - roi_extraction_robo_video_2
+    - roi_extraction_robo_video_3
+    - roi_extraction_robo_video_4
+    - roi_extraction_robo_video_5
+    - roi_extraction_robo_video_6
+    - roi_extraction_robo_video_7
+    - roi_extraction_robo_video_8
+    - roi_extraction_robo_video_9
+    - realworld_custom_video1
+    - realworld_custom_video2
+    - realworld_custom_video3
+    - realworld_custom_video4
+    - realworld_real_video0
+    - realworld_real_video1
+    - realworld_real_video2
+    - realworld_real_video3
+    - realworld_real_video4
+    - realworld_real_video5
+    - realworld_real_video6
+    - realworld_real_video7
+    - realworld_real_video8
+    - realworld_real_video9
+    - realworld_real_video11
+    - realworld_real_video12
+    - realworld_real_video13
+    - realworld_real_video14
+    - realworld_real_video15
+    - realworld_real_video16
+    - realworld_real_video17
+    - realworld_real_video18
+    - realworld_seg_3_Altman
+
+  video_indices_val:
+    - realworld_COFFEE
+    - realworld_real_video10
+  max_tracks_per_video_train: null  # null = use all tracks
+  max_tracks_per_video_val: null
+
+# Model
+model:
+  pretrained: true  # use ImageNet-pretrained ResNet18
+
+# Loss weights
+loss:
+  lambda_psi: 1.0       # parameter regression (Stage 1 only)
+  lambda_recon: 1.0      # reconstruction
+  lambda_temporal: 0.1   # temporal consistency (lowered to avoid over-smoothing)
+
+# Optimizer (LR scaled for batch_size=512; paper used 0.0005 at batch=32)
+optimizer:
+  lr_stage1: 0.003
+  lr_stage2: 0.002
+  weight_decay: 0.00001
+
+# LR scheduler (linear warmup + cosine annealing)
+scheduler:
+  warmup_epochs: 2
+  eta_min: 0.000001

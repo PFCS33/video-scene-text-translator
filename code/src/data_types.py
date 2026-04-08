@@ -85,6 +85,9 @@ class TextDetection:
     H_to_frontal: np.ndarray | None = None  # 3x3: frame → canonical frontal
     H_from_frontal: np.ndarray | None = None  # 3x3: canonical frontal → frame
     homography_valid: bool = False
+    # Inpainted background ROI in canonical frontal space (text removed).
+    # Populated by an inpainting step before S4; consumed by S4's LCM.
+    inpainted_background: np.ndarray | None = None  # H x W x 3, uint8
 
 
 @dataclass

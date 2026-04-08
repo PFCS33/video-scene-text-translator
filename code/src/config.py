@@ -76,6 +76,36 @@ class PropagationConfig:
     clip_limit: float = 2.0
     blend_blur_kernel: int = 5
 
+    # Lighting Correction Module (TPM/LCM) — applied per-frame when each
+    # detection has an inpainted_background populated. Falls back to the
+    # legacy histogram-matching path when backgrounds are missing.
+    use_lcm: bool = False
+    lcm_eps: float = 1e-3
+    lcm_ratio_clip_min: float = 0.5
+    lcm_ratio_clip_max: float = 2.0
+    lcm_ratio_blur_ksize: int = 9
+    lcm_use_log_domain: bool = True
+    lcm_temporal_alpha: float = 1.0  # 1.0 = no temporal smoothing
+    lcm_neighbor_self_weight: float = 2.0
+
+    # Background inpainter for LCM. Only loaded when use_lcm=True.
+    # Backends: "srnet" (lksshw/SRNet wrapper) or "none".
+    inpainter_backend: str = "none"
+    inpainter_checkpoint_path: str | None = None
+    inpainter_device: str = "cuda"
+
+    # Blur Prediction Network (TPM/BPN). Applies a per-frame differential
+    # blur to the LCM-corrected ROI to match each frame's blur level.
+    # Only invoked when both use_lcm and use_bpn are True (paper order:
+    # LCM then BPN). bpn_image_size must match the resolution the
+    # checkpoint was trained at.
+    use_bpn: bool = False
+    bpn_checkpoint_path: str | None = None
+    bpn_device: str = "cuda"
+    bpn_n_neighbors: int = 3
+    bpn_image_size: tuple[int, int] = (64, 128)  # (H, W) at training time
+    bpn_kernel_size: int = 41
+
 
 @dataclass
 class RevertConfig:

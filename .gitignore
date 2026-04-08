@@ -33,6 +33,9 @@ Thumbs.db
 # Project-specific
 code/debug_output/
 _refs/
+checkpoints/
+code/checkpoints/
+code/eval_output/
 
 # Claude Code (track commands/agents/skills, ignore local files)
 .claude/local.md
@@ -42,3 +45,4 @@ test_data/*.mp4
 
 # installed third-party code
 third_party/co-tracker/
+third_party/SRNet/

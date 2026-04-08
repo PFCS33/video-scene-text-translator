@@ -1,0 +1,2 @@
+python -m src.models.bpn.train --config src/models/bpn/config.yaml --stage 1
+python -m src.models.bpn.train --config src/models/bpn/config.yaml --stage 2 --resume checkpoints/bpn/bpn_stage1_epoch_final.pt 

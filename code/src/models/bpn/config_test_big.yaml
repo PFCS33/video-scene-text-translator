@@ -1,0 +1,38 @@
+# BPN Quick Test Configuration — small subset for verifying the code works
+# Usage: python -m src.models.bpn.train --config src/models/bpn/config_test.yaml
+
+stage: 1
+seed: 42
+device: cuda
+epochs: 2
+save_every: 1
+blur_kernel_size: 41
+
+checkpoint_dir: checkpoints/bpn_test_big
+
+data:
+  data_root: /workspace/tpm_dataset
+  n_neighbors: 3
+  image_size: [128, 256]
+  batch_size: 8
+  num_workers: 2
+  video_indices_train: [roi_extraction_robo_video_1, realworld_custom_video1, realworld_custom_video2]
+  video_indices_val: [realworld_COFFEE]
+  max_tracks_per_video_train: null
+  max_tracks_per_video_val: 200
+
+model:
+  pretrained: true
+
+loss:
+  lambda_psi: 1.0
+  lambda_recon: 1.0
+  lambda_temporal: 0.5
+
+optimizer:
+  lr_stage1: 0.0005
+  lr_stage2: 0.0003
+  weight_decay: 0.00001
+
+scheduler:
+  eta_min: 0.000001

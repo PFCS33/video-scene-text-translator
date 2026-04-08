@@ -110,14 +110,18 @@ class TestPropagationRun:
             canonical_size=(180, 80),
             edited_roi=edited_roi,
         )
-        with patch("src.stages.s4_propagation.cv2.warpPerspective",
+        with patch("src.stages.s4_propagation.stage.cv2.warpPerspective",
                     wraps=cv2.warpPerspective) as mock_warp:
             result = stage.run([track], {0: frame})
 
-        # Verify warpPerspective was called (the frontalization path)
-        mock_warp.assert_called_once()
-        np.testing.assert_array_equal(mock_warp.call_args.args[1], H)
-        assert mock_warp.call_args.args[2] == (180, 80)
+        # Verify warpPerspective was called for the frontalization path.
+        # S4 may warp twice when the reference detection is also a target
+        # (once to set up LCM ref background, once during the per-detection
+        # loop), so we just check that every call used the right H + size.
+        assert mock_warp.call_count >= 1
+        for call in mock_warp.call_args_list:
+            np.testing.assert_array_equal(call.args[1], H)
+            assert call.args[2] == (180, 80)
 
         assert 0 in result
         assert len(result[0]) == 1

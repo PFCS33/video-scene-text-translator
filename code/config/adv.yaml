@@ -57,6 +57,23 @@ propagation:
   histogram_bins: 256
   clip_limit: 2.0
   blend_blur_kernel: 5
+  use_lcm: true
+  # Background inpainter for LCM. Only loaded when use_lcm=True.
+  # Backends: "srnet" (lksshw/SRNet wrapper) or "none".
+  inpainter_backend: "srnet"
+  inpainter_checkpoint_path: "third_party/SRNet/checkpoints/trained_final_5M_.model"
+  inpainter_device: "cuda"
+  # Blur Prediction Network (TPM/BPN). Applies a per-frame differential
+  # blur to the LCM-corrected ROI to match each frame's blur level.
+  # Only invoked when both use_lcm and use_bpn are True (paper order:
+  # LCM then BPN). bpn_image_size must match the resolution the
+  # checkpoint was trained at.
+  use_bpn: true
+  bpn_checkpoint_path: "checkpoints/bpn/bpn_v0.pt"
+  bpn_device: "cuda"
+  bpn_n_neighbors: 3
+  bpn_image_size: [64, 128]  # (H, W) at training time
+  bpn_kernel_size: 41
 
 revert:
   blend_border_size: 3
