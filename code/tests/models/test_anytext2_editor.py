@@ -89,14 +89,14 @@ class TestPrepareRoi:
     def test_already_large_and_aligned_unchanged(self):
         """512×512 image needs no changes."""
         img = np.zeros((512, 512, 3), dtype=np.uint8)
-        result, rect = AnyText2Editor._prepare_roi(img, min_gen_size=512)
+        result, rect, _scale = AnyText2Editor._prepare_roi(img, min_gen_size=512)
         assert result.shape == (512, 512, 3)
         assert rect == (0, 512, 0, 512)
 
     def test_large_but_not_aligned_gets_padded(self):
         """600×400: already >= 512 but not 64-aligned → pad to 640×448."""
         img = np.zeros((400, 600, 3), dtype=np.uint8)
-        result, rect = AnyText2Editor._prepare_roi(img, min_gen_size=512)
+        result, rect, _scale = AnyText2Editor._prepare_roi(img, min_gen_size=512)
         assert self._is_64_aligned(result)
         # Content should be 400×600 inside the padded image
         t, b, le, r = rect
@@ -108,7 +108,7 @@ class TestPrepareRoi:
     def test_small_roi_upscaled_to_512(self):
         """150×40 ROI should be upscaled so max dim reaches 512."""
         img = np.zeros((40, 150, 3), dtype=np.uint8)
-        result, rect = AnyText2Editor._prepare_roi(img, min_gen_size=512)
+        result, rect, _scale = AnyText2Editor._prepare_roi(img, min_gen_size=512)
         assert self._is_64_aligned(result)
         # Content should be upscaled: 150*(512/150)=512, 40*(512/150)≈137
         t, b, le, r = rect
@@ -122,7 +122,7 @@ class TestPrepareRoi:
     def test_small_square_upscaled(self):
         """100×100 ROI should upscale to 512×512."""
         img = np.zeros((100, 100, 3), dtype=np.uint8)
-        result, rect = AnyText2Editor._prepare_roi(img, min_gen_size=512)
+        result, rect, _scale = AnyText2Editor._prepare_roi(img, min_gen_size=512)
         assert result.shape == (512, 512, 3)
         assert rect == (0, 512, 0, 512)
 
@@ -131,7 +131,7 @@ class TestPrepareRoi:
     def test_too_large_scaled_down(self):
         """2000×600 should scale down so max dim ≤ 1024."""
         img = np.zeros((600, 2000, 3), dtype=np.uint8)
-        result, rect = AnyText2Editor._prepare_roi(img, min_gen_size=512)
+        result, rect, _scale = AnyText2Editor._prepare_roi(img, min_gen_size=512)
         assert self._is_64_aligned(result)
         assert max(result.shape[:2]) <= 1024
         t, b, le, r = rect
@@ -151,7 +151,7 @@ class TestPrepareRoi:
         ]
         for h, w in test_cases:
             img = np.zeros((h, w, 3), dtype=np.uint8)
-            result, _ = AnyText2Editor._prepare_roi(img, min_gen_size=512)
+            result, _, _s = AnyText2Editor._prepare_roi(img, min_gen_size=512)
             assert self._is_64_aligned(result), (
                 f"Input ({w}×{h}) → output ({result.shape[1]}×{result.shape[0]}) "
                 f"not 64-aligned"
@@ -162,7 +162,7 @@ class TestPrepareRoi:
     def test_content_rect_preserves_pixel_count(self):
         """Content rect dimensions should match upscaled (pre-pad) size."""
         img = np.full((40, 150, 3), 42, dtype=np.uint8)
-        result, (t, b, le, r) = AnyText2Editor._prepare_roi(img, min_gen_size=512)
+        result, (t, b, le, r), _scale = AnyText2Editor._prepare_roi(img, min_gen_size=512)
         content = result[t:b, le:r]
         # Content should be non-zero (filled with 42)
         assert content.shape[2] == 3
@@ -174,7 +174,7 @@ class TestPrepareRoi:
         img = np.zeros((40, 150, 3), dtype=np.uint8)
         img[0, :] = [255, 0, 0]   # top edge red
         img[-1, :] = [0, 255, 0]  # bottom edge green
-        result, (t, b, le, r) = AnyText2Editor._prepare_roi(img, min_gen_size=512)
+        result, (t, b, le, r), _scale = AnyText2Editor._prepare_roi(img, min_gen_size=512)
         if t > 0:
             # Top padding should replicate the top edge (red)
             assert np.all(result[0, le:r] == [255, 0, 0])
@@ -187,14 +187,14 @@ class TestPrepareRoi:
     def test_min_gen_size_clamped_to_256_floor(self):
         """min_gen_size below 256 should be clamped to 256."""
         img = np.zeros((200, 200, 3), dtype=np.uint8)
-        result, _ = AnyText2Editor._prepare_roi(img, min_gen_size=100)
+        result, _, _s = AnyText2Editor._prepare_roi(img, min_gen_size=100)
         assert self._is_64_aligned(result)
         assert max(result.shape[:2]) >= 256
 
     def test_min_gen_size_clamped_to_1024_ceiling(self):
         """min_gen_size above 1024 should be clamped to 1024."""
         img = np.zeros((200, 200, 3), dtype=np.uint8)
-        result, (t, b, le, r) = AnyText2Editor._prepare_roi(img, min_gen_size=2000)
+        result, (t, b, le, r), _s = AnyText2Editor._prepare_roi(img, min_gen_size=2000)
         assert max(result.shape[:2]) <= 1088  # 1024 + up to 63 for alignment
         assert r - le <= 1024
 
@@ -203,7 +203,7 @@ class TestPrepareRoi:
     def test_extreme_wide_aspect_ratio(self):
         """1000×30 ROI: max=1000 already ≥ 512, no upscale. Pad to 64-align."""
         img = np.zeros((30, 1000, 3), dtype=np.uint8)
-        result, (t, b, le, r) = AnyText2Editor._prepare_roi(img, min_gen_size=512)
+        result, (t, b, le, r), _scale = AnyText2Editor._prepare_roi(img, min_gen_size=512)
         assert self._is_64_aligned(result)
         # Width 1000 stays, only padded to next 64-multiple (1024)
         assert r - le == 1000
@@ -213,7 +213,7 @@ class TestPrepareRoi:
     def test_extreme_wide_small_aspect_ratio(self):
         """400×20 ROI: max=400 < 512, upscale to 512. Pad short axis."""
         img = np.zeros((20, 400, 3), dtype=np.uint8)
-        result, (t, b, le, r) = AnyText2Editor._prepare_roi(img, min_gen_size=512)
+        result, (t, b, le, r), _scale = AnyText2Editor._prepare_roi(img, min_gen_size=512)
         assert self._is_64_aligned(result)
         assert r - le == 512  # long side upscaled to min_gen_size
         assert result.shape[0] >= 64  # short side padded to 64-align
@@ -403,6 +403,68 @@ class TestConfigValidation:
         config.output_video = "out.mp4"
         errors = config.validate()
         assert not any("server_url" in e for e in errors)
+
+
+class TestPrepareRoiScaleReturn:
+    """Verify _prepare_roi returns the correct scale factor."""
+
+    def test_scale_1_when_no_resize(self):
+        img = np.zeros((512, 512, 3), dtype=np.uint8)
+        _, _, scale = AnyText2Editor._prepare_roi(img, min_gen_size=512)
+        assert scale == 1.0
+
+    def test_scale_upscale(self):
+        img = np.zeros((100, 100, 3), dtype=np.uint8)
+        _, _, scale = AnyText2Editor._prepare_roi(img, min_gen_size=512)
+        assert scale == pytest.approx(512 / 100)
+
+    def test_scale_downscale(self):
+        img = np.zeros((600, 2000, 3), dtype=np.uint8)
+        _, _, scale = AnyText2Editor._prepare_roi(img, min_gen_size=512)
+        assert scale == pytest.approx(1024 / 2000)
+
+
+class TestEditRegionMask:
+    """Verify mask targets only the edit_region when provided."""
+
+    @patch("src.models.anytext2_editor.AnyText2Editor._get_client")
+    @patch.dict("sys.modules", {"gradio_client": MagicMock(handle_file=_make_mock_handle_file())})
+    def test_mask_covers_edit_region_only(self, mock_get_client, editor: AnyText2Editor):
+        """When edit_region is given, mask should be smaller than content_rect."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # 400×400 expanded ROI, text is in the center 200×200
+            mock_client = MagicMock()
+            # Result image: 448×448 (400 padded to 64-align)
+            fake_result_path = str(Path(tmpdir) / "result.png")
+            cv2.imwrite(fake_result_path, np.full((448, 448, 3), 128, dtype=np.uint8))
+            mock_job = MagicMock()
+            mock_job.result.return_value = (
+                [{"image": fake_result_path}], "debug",
+            )
+            mock_client.submit.return_value = mock_job
+            mock_get_client.return_value = mock_client
+
+            roi = np.full((400, 400, 3), 200, dtype=np.uint8)
+            edit_region = (100, 300, 100, 300)  # center 200×200
+
+            written_masks = []
+            original_imwrite = cv2.imwrite
+
+            def capture_imwrite(path, img, *args, **kwargs):
+                if "mask" in path:
+                    written_masks.append(img.copy())
+                return original_imwrite(path, img, *args, **kwargs)
+
+            with patch("cv2.imwrite", side_effect=capture_imwrite):
+                editor.edit_text(roi, "TEST", edit_region=edit_region)
+
+            assert len(written_masks) == 1
+            alpha = written_masks[0][:, :, 3]
+            masked_pixels = np.count_nonzero(alpha)
+            total_pixels = alpha.size
+            # With edit_region, masked area should be much less than total
+            # (200×200 = 40000 vs 400×400 = 160000 content area)
+            assert masked_pixels < total_pixels * 0.5
 
 
 class TestS3Integration:

@@ -75,3 +75,6 @@ text_editor:
   anytext2_img_count: 1
   # Minimum generation size: upscale small ROIs so max(h,w) >= this value (256–1024)
   anytext2_min_gen_size: 512
+  # ROI context expansion: include real scene pixels around text for better AnyText2 quality.
+  # 0.0 = tight crop (default), 0.3 = 30% margin on each side.
+  roi_context_expansion: 0.3

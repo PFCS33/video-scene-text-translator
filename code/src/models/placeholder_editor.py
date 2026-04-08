@@ -36,8 +36,30 @@ class PlaceholderTextEditor(BaseTextEditor):
     3. Render target text in a contrasting color, auto-scaled to fit.
     """
 
-    def edit_text(self, roi_image: np.ndarray, target_text: str) -> np.ndarray:
+    def edit_text(
+        self,
+        roi_image: np.ndarray,
+        target_text: str,
+        edit_region: tuple[int, int, int, int] | None = None,
+    ) -> np.ndarray:
         result = roi_image.copy()
+        h, w = result.shape[:2]
+
+        if h < 5 or w < 5:
+            return result
+
+        # When edit_region is given, render only within that sub-area
+        if edit_region is not None:
+            et, eb, el, er = edit_region
+            sub = result[et:eb, el:er].copy()
+            sub = self._render_text(sub, target_text)
+            result[et:eb, el:er] = sub
+            return result
+
+        return self._render_text(result, target_text)
+
+    def _render_text(self, result: np.ndarray, target_text: str) -> np.ndarray:
+        """Render target_text onto the image with auto-scaled font."""
         h, w = result.shape[:2]
 
         if h < 5 or w < 5:

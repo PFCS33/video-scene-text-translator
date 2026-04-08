@@ -16,12 +16,21 @@ class BaseTextEditor(ABC):
     """Abstract interface for scene text editing models."""
 
     @abstractmethod
-    def edit_text(self, roi_image: np.ndarray, target_text: str) -> np.ndarray:
+    def edit_text(
+        self,
+        roi_image: np.ndarray,
+        target_text: str,
+        edit_region: tuple[int, int, int, int] | None = None,
+    ) -> np.ndarray:
         """Replace text in an ROI image with target_text.
 
         Args:
             roi_image: BGR image of the text region (H x W x 3, uint8).
             target_text: The translated text to render.
+            edit_region: Optional (top, bottom, left, right) pixel coords
+                within *roi_image* marking the area to edit. If None,
+                the entire image is the edit target.  Used when the ROI
+                has been expanded with surrounding scene context.
 
         Returns:
             Edited BGR image of the same shape as roi_image (H x W x 3, uint8).

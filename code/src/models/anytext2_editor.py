@@ -24,9 +24,9 @@ from src.models.base_text_editor import BaseTextEditor
 logger = logging.getLogger(__name__)
 
 # AnyText2 dimension constraints.
-_MIN_DIM = 256   # Hard minimum accepted by the model
-_MAX_DIM = 1024  # Hard maximum accepted by the model
-_ALIGN = 64      # Dimensions must be multiples of this (SD VAE + U-Net)
+MIN_DIM = 256   # Hard minimum accepted by the model
+MAX_DIM = 1024  # Hard maximum accepted by the model
+ALIGN = 64      # Dimensions must be multiples of this (SD VAE + U-Net)
 
 
 class AnyText2Editor(BaseTextEditor):
@@ -82,12 +82,22 @@ class AnyText2Editor(BaseTextEditor):
     # Public API
     # ------------------------------------------------------------------
 
-    def edit_text(self, roi_image: np.ndarray, target_text: str) -> np.ndarray:
+    def edit_text(
+        self,
+        roi_image: np.ndarray,
+        target_text: str,
+        edit_region: tuple[int, int, int, int] | None = None,
+    ) -> np.ndarray:
         """Replace text in *roi_image* with *target_text* via AnyText2.
 
         Args:
             roi_image: BGR image of the text region (H x W x 3, uint8).
             target_text: The translated text to render.
+            edit_region: Optional (top, bottom, left, right) pixel coords
+                within *roi_image* marking the area to edit.  When the ROI
+                has been expanded with scene context, this restricts the
+                AnyText2 mask to the text area only.  If *None*, the entire
+                content region is edited.
 
         Returns:
             Edited BGR image, same shape as *roi_image*.
@@ -103,12 +113,35 @@ class AnyText2Editor(BaseTextEditor):
 
         # Upscale, 64-align, and pad — returns prepared image + content region
         min_gen = self.config.anytext2_min_gen_size
-        roi_prepared, content_rect = self._prepare_roi(roi_image, min_gen)
+        roi_prepared, content_rect, scale = self._prepare_roi(roi_image, min_gen)
         h_send, w_send = roi_prepared.shape[:2]
         ct, cb, cl, cr = content_rect  # top, bottom, left, right
 
-        # Extract dominant text color from the original (non-padded) content
-        text_color = self._extract_text_color(roi_image)
+        # Compute mask_rect: the region AnyText2 should edit.
+        # When edit_region is provided, mask only that sub-area (text only).
+        # Otherwise, mask the entire content rectangle.
+        if edit_region is not None:
+            et, eb, el, er = edit_region
+            pad_top = ct
+            pad_left = cl
+            mask_rect = (
+                max(0, pad_top + int(round(et * scale))),
+                min(h_send, pad_top + int(round(eb * scale))),
+                max(0, pad_left + int(round(el * scale))),
+                min(w_send, pad_left + int(round(er * scale))),
+            )
+        else:
+            mask_rect = content_rect
+
+        mt, mb, ml, mr = mask_rect
+
+        # Extract dominant text color from the text area only
+        if edit_region is not None:
+            et, eb, el, er = edit_region
+            color_region = roi_image[et:eb, el:er]
+        else:
+            color_region = roi_image
+        text_color = self._extract_text_color(color_region)
 
         # Save images to temp files (Gradio API needs file paths)
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -120,9 +153,8 @@ class AnyText2Editor(BaseTextEditor):
 
             # RGBA mask: alpha channel marks the edit region.
             # AnyText2 extracts the mask from layers[0][..., 3:] (alpha).
-            # Only mark the actual content rectangle — padding stays anchored.
             mask = np.zeros((h_send, w_send, 4), dtype=np.uint8)
-            mask[ct:cb, cl:cr, 3] = 255
+            mask[mt:mb, ml:mr, 3] = 255
             if not cv2.imwrite(mask_path, mask):
                 raise RuntimeError(f"Failed to write temp mask image to {mask_path}")
 
@@ -286,7 +318,7 @@ class AnyText2Editor(BaseTextEditor):
     @staticmethod
     def _prepare_roi(
         image: np.ndarray, min_gen_size: int = 512,
-    ) -> tuple[np.ndarray, tuple[int, int, int, int]]:
+    ) -> tuple[np.ndarray, tuple[int, int, int, int], float]:
         """Upscale, 64-align, and pad an ROI for AnyText2.
 
         Steps:
@@ -300,21 +332,21 @@ class AnyText2Editor(BaseTextEditor):
         Args:
             image: BGR input ROI (H × W × 3, uint8).
             min_gen_size: Target minimum for ``max(h, w)``.  Clamped to
-                [``_MIN_DIM``, ``_MAX_DIM``] internally.
+                [``MIN_DIM``, ``MAX_DIM``] internally.
 
         Returns:
-            ``(prepared_image, content_rect)`` where *content_rect* is
-            ``(top, bottom, left, right)`` — the slice coordinates of the
-            original content within the padded image.  Use this to build
-            a localized mask and to crop the result.
+            ``(prepared_image, content_rect, scale)`` where *content_rect*
+            is ``(top, bottom, left, right)`` — the slice coordinates of
+            the original content within the padded image, and *scale* is
+            the resize factor applied to the input.
         """
-        min_gen_size = max(_MIN_DIM, min(min_gen_size, _MAX_DIM))
+        min_gen_size = max(MIN_DIM, min(min_gen_size, MAX_DIM))
         h, w = image.shape[:2]
 
         # 1. Downscale if above hard max
         scale = 1.0
-        if max(h, w) > _MAX_DIM:
-            scale = _MAX_DIM / max(h, w)
+        if max(h, w) > MAX_DIM:
+            scale = MAX_DIM / max(h, w)
 
         # 2. Upscale if below quality floor
         if max(h, w) * scale < min_gen_size:
@@ -333,24 +365,24 @@ class AnyText2Editor(BaseTextEditor):
                 w, h, new_w, new_h, scale,
             )
 
-        # 3. Pad to next multiple of _ALIGN (64) on each axis
+        # 3. Pad to next multiple of ALIGN (64) on each axis
         def _pad_to_align(dim: int) -> int:
-            remainder = dim % _ALIGN
-            return (_ALIGN - remainder) if remainder else 0
+            remainder = dim % ALIGN
+            return (ALIGN - remainder) if remainder else 0
 
         pad_w = _pad_to_align(new_w)
         pad_h = _pad_to_align(new_h)
 
-        # Also ensure both axes meet _MIN_DIM after alignment.
-        # NOTE: This preserves 64-alignment because _MIN_DIM (256) is
-        # itself a multiple of _ALIGN (64).  If either constant changes,
-        # verify that _MIN_DIM % _ALIGN == 0 still holds.
+        # Also ensure both axes meet MIN_DIM after alignment.
+        # NOTE: This preserves 64-alignment because MIN_DIM (256) is
+        # itself a multiple of ALIGN (64).  If either constant changes,
+        # verify that MIN_DIM % ALIGN == 0 still holds.
         aligned_w = new_w + pad_w
         aligned_h = new_h + pad_h
-        if aligned_w < _MIN_DIM:
-            pad_w += _MIN_DIM - aligned_w
-        if aligned_h < _MIN_DIM:
-            pad_h += _MIN_DIM - aligned_h
+        if aligned_w < MIN_DIM:
+            pad_w += MIN_DIM - aligned_w
+        if aligned_h < MIN_DIM:
+            pad_h += MIN_DIM - aligned_h
 
         # Content rectangle within the padded image
         pad_left = pad_w // 2
@@ -373,10 +405,10 @@ class AnyText2Editor(BaseTextEditor):
         content_rect = (pad_top, pad_top + new_h, pad_left, pad_left + new_w)
 
         logger.debug(
-            "Prepared ROI: original %dx%d → final %dx%d, content_rect=%s",
-            w, h, image.shape[1], image.shape[0], content_rect,
+            "Prepared ROI: original %dx%d → final %dx%d, content_rect=%s, scale=%.3f",
+            w, h, image.shape[1], image.shape[0], content_rect, scale,
         )
-        return image, content_rect
+        return image, content_rect, scale
 
     @staticmethod
     def _extract_text_color(image: np.ndarray) -> str:

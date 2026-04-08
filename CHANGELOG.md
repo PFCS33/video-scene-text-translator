@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-04-08 — Expanded ROI with Scene Context (feat/expanded-roi)
+
+### ROI Context Expansion
+- Expand the region sent to AnyText2 with real scene pixels from the video frame, giving the model visual context for better style-matching text generation
+- Compute expanded warp via translation matrix `T @ H_to_frontal` — reuses existing homography, no S2 changes needed
+- AnyText2 mask targets only the text area within the expanded ROI — scene margins provide context but are not edited
+- S3 crops the result back to canonical size — S4/S5 see no change
+
+### Configuration
+- Add `text_editor.roi_context_expansion` (default 0.0, recommended 0.3) to both `default.yaml` and `adv.yaml`
+- Expansion ratio is automatically capped to avoid exceeding AnyText2's 1024px max dimension
+
+### Code Quality
+- `BaseTextEditor.edit_text()` ABC gains optional `edit_region` param (backward compatible)
+- `PlaceholderTextEditor` respects `edit_region` — renders text only within the specified sub-area
+- `AnyText2Editor._prepare_roi()` now returns scale factor for accurate mask coordinate mapping
+- `mask_rect` bounds clamped to image dimensions for safety
+- AnyText2 dimension constants (`MAX_DIM`, `MIN_DIM`, `ALIGN`) exported as public module-level names — S3 imports instead of duplicating
+
+### Testing
+- 15 new tests: `_clamp_expansion_ratio` (6), `_expanded_warp` (3), S3 expansion integration (2), `_prepare_roi` scale return (3), edit_region mask targeting (1)
+- 186 tests passing (4 pre-existing failures: missing `wordfreq`)
+
 ## 2026-04-08 — Test Reorganization & Real E2E Test (feat/anytext2-integration)
 
 ### Test Structure

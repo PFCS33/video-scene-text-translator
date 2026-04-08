@@ -99,6 +99,11 @@ class TextEditorConfig:
     # AnyText2 was trained at 512×512 — smaller inputs degrade quality.
     # Range: 256–1024. Both dimensions are also padded to multiples of 64.
     anytext2_min_gen_size: int = 512
+    # ROI context expansion: fraction of each dimension to add as margin
+    # around the text region, filled with real scene pixels from the frame.
+    # Gives AnyText2 visual context for better style matching.
+    # 0.0 = no expansion (current behavior), 0.3 = 30% margin on each side.
+    roi_context_expansion: float = 0.0
 
 
 @dataclass
