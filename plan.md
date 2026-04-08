@@ -1,103 +1,80 @@
-# Plan: Reorganize Test Directory + Add Real E2E Test
+# Plan: Add LaMa Background Inpainter Backend for S4
+
+## Context
+The S4 propagation stage uses a background inpainter to produce text-free backgrounds for LCM (Lighting Correction Module) ratio computation. Currently only SRNet is supported. SRNet's inpainting quality on textured backgrounds (e.g., burlap, tiles) produces artifacts that degrade the LCM lighting ratio, causing washed-out results. LaMa (Large Mask Inpainting, WACV 2022) is a resolution-robust general-purpose inpainter with better texture synthesis via Fourier convolutions.
 
 ## Goal
-Restructure the flat 14-file test directory into a tiered layout (unit / stages / models / integration / e2e) so tests are organized by scope and speed. Add a real e2e test that exercises the full pipeline (PaddleOCR + CoTracker + AnyText2 server) on a GPU machine. Default `pytest` on a local machine must skip e2e automatically.
+Add LaMa as a second `BaseBackgroundInpainter` backend, selectable via `inpainter_backend: "lama"` in config. Extend the inpainter ABC to accept an optional text mask (LaMa needs one; SRNet doesn't).
 
 ## Approach
 
-### Directory structure
-```
-tests/
-├── __init__.py
-├── conftest.py                      # Shared fixtures + marker registration (kept as-is)
-├── unit/                            # Fast, pure logic, no external deps (~67 tests)
-│   ├── __init__.py
-│   ├── test_config.py
-│   ├── test_data_types.py
-│   ├── test_geometry.py
-│   ├── test_image_processing.py
-│   ├── test_optical_flow.py
-│   └── test_video_io.py
-├── stages/                          # Stage tests, mock external deps (~66 tests)
-│   ├── __init__.py
-│   ├── test_s1_detection.py
-│   ├── test_s2_frontalization.py
-│   ├── test_s3_text_editing.py
-│   ├── test_s4_propagation.py
-│   ├── test_s5_revert.py
-│   └── test_streaming_detection.py
-├── models/                          # Model backend tests, mock server (~29 tests)
-│   ├── __init__.py
-│   └── test_anytext2_editor.py
-├── integration/                     # Wiring tests, mocked externals (~2 tests)
-│   ├── __init__.py
-│   └── test_pipeline.py             # renamed from test_pipeline_integration.py
-└── e2e/                             # Real resources: GPU + AnyText2 server + network
-    ├── __init__.py
-    ├── conftest.py                  # Auto-skip fixtures (no GPU, no server, no test video)
-    └── test_real_pipeline.py        # Full pipeline, zero mocks
+### Key Design Decisions
+1. **Extend `BaseBackgroundInpainter.inpaint()` with optional `text_mask` kwarg** — S4 generates the mask via Otsu thresholding + dilation, passes it to whichever inpainter is configured. SRNet ignores it; LaMa uses it. A `uses_text_mask` class-level flag controls whether S4 bothers generating the mask.
+2. **Upscale small ROIs** to min 256px (LaMa's training resolution) before inference, downscale after.
+3. **Direct TorchScript loading** — load `big-lama.pt` via `torch.jit.load()`, no pip package. Install script downloads the 206MB model.
+
+### Text Mask Generation (in `stage.py`)
+- Convert canonical ROI to grayscale → Otsu threshold → auto-invert if majority region (ensure text = minority) → dilate (3×3 kernel, 2 iterations)
+- Only computed when `inpainter.uses_text_mask is True`
+
+```python
+def _generate_text_mask(self, canonical_roi: np.ndarray) -> np.ndarray:
+    gray = cv2.cvtColor(canonical_roi, cv2.COLOR_BGR2GRAY)
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    if np.mean(binary) > 127:  # auto-invert: text should be minority
+        binary = 255 - binary
+    kernel = np.ones((3, 3), np.uint8)
+    return cv2.dilate(binary, kernel, iterations=2)
 ```
 
-### E2E exclusion (two layers)
-1. **`pytest.ini` with `addopts = --ignore=tests/e2e`** — e2e never runs unless explicitly requested
-2. **Auto-skip fixtures in `tests/e2e/conftest.py`** — safety net: checks GPU, AnyText2 server reachability, test video existence. If any missing, test is `skipped` (not failed).
+### LaMa Inference Pipeline (in `lama_inpainter.py`)
+1. Upscale if min(H,W) < 256
+2. BGR→RGB, normalize to [0,1] float32 tensor
+3. Mask: uint8 [0,255] → float32 [0,1] tensor
+4. Pad both to mod-8 (reflect padding on right/bottom)
+5. Concatenate to (1, 4, H, W), forward through TorchScript model
+6. Crop padding, downscale if upscaled, RGB→BGR uint8
 
-Local: `pytest tests/ -v` runs unit + stages + models + integration, ignores e2e.
-GPU machine: `pytest tests/e2e/ -v` explicitly opts in.
-
-### E2E test assertions
-- Output video exists with correct frame count and resolution matching input
-- At least 1 text track detected and translated
-- AnyText2 produced a non-degenerate edited ROI (not all-black/uniform)
-- Pipeline completes without exceptions
-- Per-stage timing logged for performance monitoring
-
-### Marker registration
-Root `conftest.py` registers custom markers: `slow`, `gpu`, `network`. Not heavily used initially but enables selective filtering as test suite grows.
-
-### What stays the same
-- All `from src.*` imports unchanged — no test file needs import edits
-- Root `conftest.py` fixtures unchanged (synthetic frames, quads, tracks, config)
-- Test file contents unchanged — only locations move
-- `__pycache__` directories regenerate automatically
+### LaMa Model Details
+- Model: `big-lama.pt` TorchScript (~206MB), Apache 2.0 license
+- Download: `https://github.com/enesmsahin/simple-lama-inpainting/releases/download/v0.1.0/big-lama.pt`
+- Input: (1, 4, H, W) float32 — 3ch RGB image + 1ch mask, all [0,1], dims divisible by 8
+- Output: (1, 3, H, W) float32 [0,1]
+- Load: `torch.jit.load(path, map_location=device)` — compatible with PyTorch 1.13+
 
 ## Files to Change
-- [ ] `code/pytest.ini` — (new) add `addopts = --ignore=tests/e2e` and marker registration
-- [ ] `code/tests/conftest.py` — Add `pytest.mark` registration for `slow`, `gpu`, `network`
-- [ ] `code/tests/unit/__init__.py` — (new) empty
-- [ ] `code/tests/stages/__init__.py` — (new) empty
-- [ ] `code/tests/models/__init__.py` — (new) empty
-- [ ] `code/tests/integration/__init__.py` — (new) empty
-- [ ] `code/tests/e2e/__init__.py` — (new) empty
-- [ ] `code/tests/e2e/conftest.py` — (new) auto-skip fixtures for GPU, AnyText2 server, test video
-- [ ] `code/tests/e2e/test_real_pipeline.py` — (new) real e2e test
-- [ ] Move 6 files → `tests/unit/`
-- [ ] Move 6 files → `tests/stages/`
-- [ ] Move 1 file → `tests/models/`
-- [ ] Move 1 file → `tests/integration/` (rename test_pipeline_integration.py → test_pipeline.py)
-- [ ] Remove old files from `tests/` root after moves
-- [ ] `CLAUDE.md` — Update test commands to reflect new structure
+- [ ] `code/src/stages/s4_propagation/base_inpainter.py` — Add `text_mask: np.ndarray | None = None` kwarg (keyword-only) + `uses_text_mask: bool = False` class attr
+- [ ] `code/src/stages/s4_propagation/srnet_inpainter.py` — Accept and ignore `text_mask`
+- [ ] (new) `code/src/stages/s4_propagation/lama_inpainter.py` — LaMa backend (~80 lines)
+- [ ] `code/src/stages/s4_propagation/stage.py` — Add `_generate_text_mask()`, pass mask at inpaint call sites (lines 192, 211), add `"lama"` dispatch in `_get_inpainter()` (after line 76)
+- [ ] `code/src/config.py` — Update comment on `inpainter_backend` to list "lama"
+- [ ] `code/config/adv.yaml` — Add commented-out LaMa config alternative
+- [ ] (new) `third_party/install_lama.sh` — Download `big-lama.pt` (~206MB) to `third_party/lama/`
+- [ ] `code/tests/stages/test_s4_propagation.py` — Tests for mask generation, LaMa dispatch, mask-passing flow
+- [ ] (new) `code/tests/stages/test_lama_inpainter.py` — Unit tests for LaMa wrapper (mocked TorchScript model)
+- [ ] `CLAUDE.md` — Add LaMa to gotchas/stack sections
 
 ## Risks
-- **Fixture discovery**: pytest resolves `conftest.py` by walking up from the test file. Root `tests/conftest.py` is still an ancestor of all subdirs, so shared fixtures work. Verified: no subdir-specific conftest needed except `e2e/`.
-- **CI breakage**: If CI runs `pytest tests/`, the `pytest.ini --ignore=tests/e2e` ensures e2e is excluded. No CI changes needed.
-- **Duplicate fixtures in `test_streaming_detection.py`**: This file re-declares `default_config`, `rect_quad`, `synthetic_frame`, `synthetic_frame_shifted` fixtures that overlap with root `conftest.py`. The local fixtures take precedence (pytest scoping), so no breakage — but worth cleaning up later.
-- **Git history**: `git mv` preserves history. One commit for the moves, separate commit for new files.
+- **Otsu mask quality**: May misclassify on low-contrast or multi-color backgrounds. Mitigated by auto-invert heuristic (text = minority region).
+- **Small ROI quality**: ROIs at 64px are below LaMa's 256×256 training resolution. Mitigated by upscaling before inference.
+- **TorchScript deprecation**: Deprecated in PyTorch 2.9 but `torch.jit.load()` still works. Not a concern for course project timeline.
+- **Breaking ABC change**: `inpaint()` signature changes. Only 2 subclasses (SRNet + LaMa), both updated in this plan.
 
 ## Done When
-- [ ] All 14 existing test files moved to correct subdirectories
-- [ ] `pytest tests/ -v` from `code/` runs 171 tests, 0 e2e (same as before)
-- [ ] `pytest tests/e2e/ -v` runs real e2e on GPU machine (or skips gracefully without GPU/server)
-- [ ] `pytest tests/unit/ -v` runs only unit tests (~67)
-- [ ] `pytest tests/stages/ -v` runs only stage tests (~66)
-- [ ] No import changes in any moved test file
-- [ ] CLAUDE.md test command updated
+- [ ] `inpainter_backend: "lama"` loads and runs LaMa on a canonical ROI
+- [ ] `inpainter_backend: "srnet"` still works unchanged (no regression)
+- [ ] Text mask generation produces reasonable binary masks on synthetic ROIs
+- [ ] Small ROIs (<256px) are upscaled before LaMa inference
+- [ ] `third_party/install_lama.sh` downloads checkpoint successfully
+- [ ] All tests pass: `cd code && python -m pytest tests/ -v`
+- [ ] Lint passes: `ruff check code/`
 
 ## Progress
-- [x] Step 1: Create `pytest.ini` and register markers in root `conftest.py`
-- [x] Step 2: Create subdirectory structure (`unit/`, `stages/`, `models/`, `integration/`, `e2e/`) with `__init__.py` files
-- [x] Step 3: `git mv` existing test files to their new locations
-- [x] Step 4: Write `tests/e2e/conftest.py` with auto-skip fixtures
-- [x] Step 5: Write `tests/e2e/test_real_pipeline.py`
-- [x] Step 6: Verify all tests pass — 171 passed (1.32s) + 4 e2e passed (224.80s)
-- [x] Step 7: Update CLAUDE.md test commands
+- [ ] Step 1: Extend `BaseBackgroundInpainter` ABC — add `text_mask` kwarg and `uses_text_mask`
+- [ ] Step 2: Update `SRNetInpainter` — accept and ignore `text_mask`
+- [ ] Step 3: Create `LaMaInpainter` backend
+- [ ] Step 4: Update `stage.py` — mask generation, mask passing, "lama" dispatch
+- [ ] Step 5: Create `third_party/install_lama.sh`
+- [ ] Step 6: Update config files (`config.py` comment, `adv.yaml` example)
+- [ ] Step 7: Write tests (mask generation, LaMa wrapper, dispatch, integration)
+- [ ] Step 8: Run full test suite + lint, update CLAUDE.md
