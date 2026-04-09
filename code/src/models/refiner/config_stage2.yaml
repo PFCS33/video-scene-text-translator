@@ -1,0 +1,115 @@
+# ROI alignment refiner — Stage 2: self-supervised fine-tuning on real pairs.
+#
+# Resumes from the converged Stage 1 checkpoint and fine-tunes on a heavy mix
+# of real in-track pairs (Type B) with a 30% synthetic anchor (Type A) to
+# keep the corner loss from drifting off its Stage 1 solution.
+#
+# Loss composition:
+#   - Type A (30% of samples): corner + recon (same weights as Stage 1,
+#     acts as a regularizer that keeps the learned homography prediction
+#     grounded in known-good ground truth).
+#   - Type B (70% of samples): NCC + Sobel-magnitude Charbonnier + corner
+#     magnitude regularization. NCC and gradient losses drive illumination-
+#     robust alignment on real frames; the regularizer prevents the network
+#     from drifting into large-motion predictions where photometric signal
+#     is ambiguous.
+#
+# Run from code/:
+#   rm -rf checkpoints/refiner/stage2
+#   python -m src.models.refiner.train \
+#       --config src/models/refiner/config_stage2.yaml \
+#       --resume checkpoints/refiner/stage1/refiner_best.pt
+
+seed: 43  # distinct from Stage 1 so augmentation sampling differs
+device: cuda
+
+data:
+  data_root: /workspace/tpm_dataset
+  train_videos:
+    - realworld_real_video0
+    - realworld_real_video1
+    - realworld_real_video2
+    - realworld_real_video3
+    - realworld_real_video4
+    - realworld_real_video5
+    - realworld_real_video6
+    - realworld_real_video7
+    - realworld_real_video8
+    - realworld_real_video9
+    - realworld_real_video10
+    - realworld_real_video11
+    - realworld_real_video12
+    - realworld_real_video13
+    - realworld_real_video14
+    - realworld_custom_video1
+    - realworld_custom_video2
+    - realworld_custom_video3
+    - realworld_seg_3_Altman
+    - roi_extraction_robo_video_1
+    - roi_extraction_robo_video_2
+    - roi_extraction_robo_video_3
+    - roi_extraction_robo_video_4
+    - roi_extraction_robo_video_5
+    - roi_extraction_robo_video_6
+    - roi_extraction_robo_video_7
+    - roi_extraction_robo_video_8
+    - roi_extraction_robo_video_9
+  val_videos:
+    - realworld_COFFEE
+    - realworld_custom_video4
+    - realworld_real_video15
+    - realworld_real_video16
+    - realworld_real_video17
+    - realworld_real_video18
+  image_size: [64, 128]
+  pairs_per_track: 64
+  syn_perturbation_px: 8.0
+  photometric_strength: 1.0
+  min_track_length: 2
+  cache_in_ram: true
+
+model:
+  base_channels: 32
+  dropout: 0.2
+  head_init_scale: 1.0e-3
+
+loss:
+  # Type A weights (same as Stage 1 so the synthetic anchor carries the
+  # same signal it did during Stage 1 pretraining).
+  corner: 1.0
+  recon: 0.25
+  # Type B weights — these are the new learning signal.
+  # ncc scale is 1 - NCC in [0, 2]. Sobel Charbonnier is small in absolute
+  # terms (edge magnitudes are sparse). Start them roughly balanced.
+  ncc: 1.0
+  grad: 1.0
+  # Corner magnitude regularizer: keeps ΔH near identity on ambiguous real
+  # pairs. Small weight — just a safety net against photometric-minimum
+  # drift. 0.01 on squared px offsets is ~0.01 at 1 px RMS, ~0.04 at 2 px.
+  reg: 0.01
+  border_frac: 0.1
+  edge_value: 0.1
+  charbonnier_eps: 1.0e-3
+
+training:
+  batch_size: 128
+  num_workers: 8
+  # Short fine-tune: Stage 1 is already converged, we just need to move the
+  # solution along the real-pair gradient.
+  epochs: 15
+  # 3x lower than Stage 1 peak (1e-4). Stage 1 already landed near a good
+  # minimum; aggressive steps here would erase that progress.
+  lr: 3.0e-5
+  weight_decay: 1.0e-4
+  eta_min: 1.0e-6
+  warmup_epochs: 1  # short warmup — resuming from a trained model
+  grad_clip: 1.0
+  # Option B: skip the ramp. Jump straight to 70% real pairs. The 30%
+  # synthetic minority keeps the corner loss anchored so we don't drift off
+  # Stage 1's known-good solution on ambiguous photometric-minimum pairs.
+  real_pair_schedule:
+    0: 0.7
+
+checkpoint:
+  out_dir: checkpoints/refiner/stage2
+  save_every_epochs: 3

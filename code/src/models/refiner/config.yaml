@@ -1,0 +1,87 @@
+# ROI alignment refiner training config. See plan.md §1.6.
+
+seed: 42
+device: cuda  # auto-fallback to cpu if CUDA is unavailable
+
+data:
+  data_root: /workspace/tpm_dataset
+  train_videos:
+    - realworld_real_video0
+    - realworld_real_video1
+    - realworld_real_video2
+    - realworld_real_video3
+    - realworld_real_video4
+    - realworld_real_video5
+    - realworld_real_video6
+    - realworld_real_video7
+    - realworld_real_video8
+    - realworld_real_video9
+    - realworld_real_video10
+    - realworld_real_video11
+    - realworld_real_video12
+    - realworld_real_video13
+    - realworld_real_video14
+    - realworld_custom_video1
+    - realworld_custom_video2
+    - realworld_custom_video3
+    - realworld_seg_3_Altman
+    - roi_extraction_robo_video_1
+    - roi_extraction_robo_video_2
+    - roi_extraction_robo_video_3
+    - roi_extraction_robo_video_4
+    - roi_extraction_robo_video_5
+    - roi_extraction_robo_video_6
+    - roi_extraction_robo_video_7
+    - roi_extraction_robo_video_8
+    - roi_extraction_robo_video_9
+  val_videos:
+    - realworld_COFFEE
+    - realworld_custom_video4
+    - realworld_real_video15
+    - realworld_real_video16
+    - realworld_real_video17
+    - realworld_real_video18
+  image_size: [64, 128]            # (H, W) — must be divisible by 16
+  pairs_per_track: 64              # cap on samples contributed per track per epoch
+  syn_perturbation_px: 8.0         # ±range for Type A corner offsets
+  photometric_strength: 1.0        # multiplier on aug ranges; Type B uses half
+  min_track_length: 2              # skip tracks shorter than this
+  cache_in_ram: true               # uint8 contiguous ndarray cache, BPN-style
+
+model:
+  base_channels: 32
+  dropout: 0.2
+  head_init_scale: 1.0e-3          # near-zero initial output -> initial ΔH ≈ I
+
+loss:
+  # Stage 1 (Type A) weights
+  corner: 1.0
+  recon: 0.25
+  # Stage 2 (Type B) weights
+  ncc: 1.0
+  grad: 1.0
+  reg: 0.01
+  # Mask construction
+  border_frac: 0.1
+  edge_value: 0.1
+  charbonnier_eps: 1.0e-3
+
+training:
+  batch_size: 128
+  num_workers: 8
+  epochs: 50
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  eta_min: 1.0e-6
+  warmup_epochs: 2
+  grad_clip: 1.0
+  # Ramp real_pair_fraction across epochs; values interpolated linearly.
+  real_pair_schedule:
+    0: 0.0
+    10: 0.2
+    20: 0.5
+    35: 0.8
+
+checkpoint:
+  out_dir: checkpoints/refiner
+  save_every_epochs: 5

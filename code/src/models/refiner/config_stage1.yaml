@@ -1,0 +1,91 @@
+# ROI alignment refiner — Stage 1: pure synthetic supervised training.
+#
+# Runs 100% Type A (synthetic self-pairs with known corner offsets). No real
+# in-track pairs. Trains corner + recon losses to convergence. The resulting
+# checkpoint is then used as the starting point for Stage 2 (ramped real-pair
+# fine-tuning) in Step 1.8.
+#
+# Run from code/:
+#   python -m src.models.refiner.train --config src/models/refiner/config_stage1.yaml
+
+seed: 42
+device: cuda  # auto-fallback to cpu if CUDA is unavailable
+
+data:
+  data_root: /workspace/tpm_dataset
+  train_videos:
+    - realworld_real_video0
+    - realworld_real_video1
+    - realworld_real_video2
+    - realworld_real_video3
+    - realworld_real_video4
+    - realworld_real_video5
+    - realworld_real_video6
+    - realworld_real_video7
+    - realworld_real_video8
+    - realworld_real_video9
+    - realworld_real_video10
+    - realworld_real_video11
+    - realworld_real_video12
+    - realworld_real_video13
+    - realworld_real_video14
+    - realworld_custom_video1
+    - realworld_custom_video2
+    - realworld_custom_video3
+    - realworld_seg_3_Altman
+    - roi_extraction_robo_video_1
+    - roi_extraction_robo_video_2
+    - roi_extraction_robo_video_3
+    - roi_extraction_robo_video_4
+    - roi_extraction_robo_video_5
+    - roi_extraction_robo_video_6
+    - roi_extraction_robo_video_7
+    - roi_extraction_robo_video_8
+    - roi_extraction_robo_video_9
+  val_videos:
+    - realworld_COFFEE
+    - realworld_custom_video4
+    - realworld_real_video15
+    - realworld_real_video16
+    - realworld_real_video17
+    - realworld_real_video18
+  image_size: [64, 128]
+  pairs_per_track: 64
+  syn_perturbation_px: 8.0
+  photometric_strength: 1.0
+  min_track_length: 2
+  cache_in_ram: true
+
+model:
+  base_channels: 32
+  dropout: 0.2
+  head_init_scale: 1.0e-3
+
+loss:
+  # Stage 1 weights: corner regression dominates, recon as a secondary signal.
+  corner: 1.0
+  recon: 0.25
+  # Stage 2 components kept at zero — no real samples in this run.
+  ncc: 0.0
+  grad: 0.0
+  reg: 0.0
+  border_frac: 0.1
+  edge_value: 0.1
+  charbonnier_eps: 1.0e-3
+
+training:
+  batch_size: 128
+  num_workers: 8
+  epochs: 30
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  eta_min: 1.0e-6
+  warmup_epochs: 2
+  grad_clip: 1.0
+  # Pure synthetic — no real pairs at any epoch.
+  real_pair_schedule:
+    0: 0.0
+
+checkpoint:
+  out_dir: checkpoints/refiner/stage1
+  save_every_epochs: 5
