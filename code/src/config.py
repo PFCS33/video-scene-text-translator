@@ -134,6 +134,20 @@ class TextEditorConfig:
     # Gives AnyText2 visual context for better style matching.
     # 0.0 = no expansion (current behavior), 0.3 = 30% margin on each side.
     roi_context_expansion: float = 0.0
+    # Adaptive mask sizing: when target text is much narrower than source
+    # canonical (e.g. 7 CJK chars → 3 CJK chars), shrink the AnyText2 mask
+    # to match target aspect and pre-inpaint source text outside the new
+    # mask. Avoids gibberish-fill characters. Requires an inpainter backend
+    # configured under `propagation.inpainter_backend` to take effect;
+    # otherwise the adaptive flow is silently skipped.
+    anytext2_adaptive_mask: bool = True
+    # Skip adaptive flow if |target_aspect - source_aspect| / source_aspect
+    # is below this fraction. Common translation cases with similar visual
+    # width (DANGER→PELIGRO, STOP→ALTO) bypass the inpaint + shrink path.
+    anytext2_mask_aspect_tolerance: float = 0.15
+    # Never shrink mask below this fraction of canonical width. AnyText2's
+    # generation quality collapses on very small masks.
+    anytext2_mask_min_ratio: float = 0.25
 
 
 @dataclass

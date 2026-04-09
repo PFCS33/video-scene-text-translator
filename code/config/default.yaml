@@ -78,3 +78,11 @@ text_editor:
   # ROI context expansion: include real scene pixels around text for better AnyText2 quality.
   # 0.0 = tight crop (default), 0.3 = 30% margin on each side.
   roi_context_expansion: 0.0
+  # Adaptive mask sizing for AnyText2: shrink mask + pre-inpaint source text
+  # when target is much narrower than source canonical (avoids gibberish-fill).
+  # Only active when backend == "anytext2" AND propagation.inpainter_backend
+  # is set. With backend == "placeholder" (this file's default) the flag is
+  # a harmless no-op and is kept on so switching backends "just works".
+  anytext2_adaptive_mask: true
+  anytext2_mask_aspect_tolerance: 0.15   # skip if mismatch is below this fraction
+  anytext2_mask_min_ratio: 0.25          # don't shrink below this × canonical width
