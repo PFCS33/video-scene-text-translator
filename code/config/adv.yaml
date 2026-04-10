@@ -92,6 +92,8 @@ revert:
   refiner_image_size: [64, 128]  # (H, W) network input — must match training
   refiner_max_corner_offset_px: 16.0
   refiner_rejection_warn_threshold: 0.1
+  temporal_smooth_window: 5
+  temporal_smooth_sigma: 10
 
 text_editor:
   backend: "anytext2"

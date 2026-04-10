@@ -260,6 +260,81 @@ class RevertStage:
             ref_roi_by_track[track.track_id] = ref_canonical
         return ref_roi_by_track
 
+    # ------------------------------------------------------------------
+    # Temporal corner smoothing
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _project_canonical_to_frame(
+        H_from_frontal: np.ndarray,
+        canonical_corners: np.ndarray,
+        delta_H: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Project canonical rectangle corners to frame-space positions.
+
+        Args:
+            H_from_frontal: 3x3 (canonical -> frame).
+            canonical_corners: (4, 2).
+            delta_H: optional 3x3 (canonical ref -> canonical tgt).
+
+        Returns:
+            (4, 2) frame-space corner positions.
+        """
+        H_eff = H_from_frontal @ delta_H if delta_H is not None else H_from_frontal
+        pts = np.column_stack([canonical_corners, np.ones(4)])  # (4, 3)
+        proj = (H_eff @ pts.T).T  # (4, 3)
+        w = proj[:, 2:3]
+        w = np.where(np.abs(w) < 1e-12, 1e-12, w)
+        return (proj[:, :2] / w).astype(np.float64)
+
+    @staticmethod
+    def _smooth_corner_trajectories(
+        trajectories: dict[int, np.ndarray],
+        frame_indices: list[int],
+        window: int,
+        sigma: float,
+    ) -> dict[int, np.ndarray]:
+        """Gaussian-weighted temporal smoothing of per-frame corner positions.
+
+        Args:
+            trajectories: frame_idx -> (4, 2) projected corners.
+            frame_indices: sorted list of frame indices where this track
+                has valid data.
+            window: total window width (must be odd, >= 3). Clamped to
+                min(window, len(frame_indices)).
+            sigma: Gaussian sigma in frames.
+
+        Returns:
+            frame_idx -> (4, 2) smoothed corners.
+        """
+        n = len(frame_indices)
+        if n < 3 or window < 3:
+            return trajectories
+
+        window = min(window, n)
+        if window % 2 == 0:
+            window -= 1
+
+        # Stack into (N, 4, 2) array for vectorised smoothing.
+        stacked = np.stack([trajectories[fi] for fi in frame_indices])  # (N, 4, 2)
+
+        # Build 1D Gaussian kernel.
+        half = window // 2
+        x = np.arange(-half, half + 1, dtype=np.float64)
+        kernel = np.exp(-x ** 2 / (2 * sigma ** 2))
+        kernel /= kernel.sum()
+
+        # Pad with edge replication so boundary frames get smoothed too.
+        padded = np.pad(stacked, ((half, half), (0, 0), (0, 0)), mode="edge")
+
+        smoothed = np.empty_like(stacked)
+        for i in range(n):
+            # Weighted sum over the window centered on frame i.
+            patch = padded[i:i + window]  # (window, 4, 2)
+            smoothed[i] = np.einsum("w,wcd->cd", kernel, patch)
+
+        return {fi: smoothed[i] for i, fi in enumerate(frame_indices)}
+
     def run(
         self,
         frames: dict[int, np.ndarray],
@@ -289,16 +364,23 @@ class RevertStage:
         refine_total = 0
         refine_rejected = 0
 
-        output_frames = []
+        smooth_window = self.config.temporal_smooth_window
+        use_smoothing = smooth_window >= 3
+
+        # ----- Pass 1: collect per-detection delta_H + projected corners -----
+        # Keyed by (frame_idx, track_id) for compositing lookup.
+        # Also collect per-track corner trajectories for smoothing.
+        delta_H_map: dict[tuple[int, int], np.ndarray | None] = {}
+        # Per-track projected corner trajectories: track_id -> {frame_idx -> (4, 2)}
+        track_corners: dict[int, dict[int, np.ndarray]] = {}
+        # Per-track sorted frame indices (for smoothing order)
+        track_frame_order: dict[int, list[int]] = {}
 
         for frame_idx in sorted_idxs:
-            frame = frames[frame_idx].copy()
-
             for prop_roi in propagated_rois.get(frame_idx, []):
                 track = tracks_by_id.get(prop_roi.track_id)
                 if track is None:
                     continue
-
                 det = track.detections.get(frame_idx)
                 if det is None or not det.homography_valid or det.H_from_frontal is None:
                     continue
@@ -325,37 +407,109 @@ class RevertStage:
                         if delta_H is None:
                             refine_rejected += 1
 
-                # Diagnostic: paint pure blue at the unrefined warped-alpha
-                # region before compositing. If ΔH != I, the refined
-                # composite will leave a crescent of exposed blue on the
-                # side the shape shifted away from. See
-                # _REFINER_DIAGNOSTIC_BLUE at module top for details.
-                if _REFINER_DIAGNOSTIC_BLUE and delta_H is not None:
-                    prop_roi.alpha_mask = np.ones_like(prop_roi.alpha_mask, dtype=np.float32)
-                    unref = self.warp_roi_to_frame(
-                        prop_roi, det.H_from_frontal, frame.shape[:2],
-                        delta_H=None,
-                    )
-                    if unref is not None:
-                        _, unref_alpha, unref_bbox = unref
-                        sl = unref_bbox.to_slice()
-                        mask = unref_alpha > 0.0
-                        region = frame[sl]
-                        region[mask] = (255, 0, 0)  # pure blue (BGR)
-                        frame[sl] = region
+                key = (frame_idx, prop_roi.track_id)
+                delta_H_map[key] = delta_H
 
-                result = self.warp_roi_to_frame(
-                    prop_roi, det.H_from_frontal, frame.shape[:2],
-                    delta_H=delta_H,
+                if use_smoothing and track.canonical_size is not None:
+                    w_can, h_can = track.canonical_size
+                    can_corners = np.array(
+                        [[0, 0], [w_can, 0], [w_can, h_can], [0, h_can]],
+                        dtype=np.float64,
+                    )
+                    proj = self._project_canonical_to_frame(
+                        det.H_from_frontal, can_corners, delta_H,
+                    )
+                    track_corners.setdefault(prop_roi.track_id, {})[frame_idx] = proj
+                    track_frame_order.setdefault(prop_roi.track_id, []).append(frame_idx)
+
+        # ----- Smooth per-track corner trajectories -----
+        smoothed_H_map: dict[tuple[int, int], np.ndarray] = {}
+        if use_smoothing:
+            sigma = self.config.temporal_smooth_sigma
+            for track_id, corners_by_frame in track_corners.items():
+                track = tracks_by_id.get(track_id)
+                if track is None or track.canonical_size is None:
+                    continue
+                fi_sorted = sorted(track_frame_order[track_id])
+                smoothed = self._smooth_corner_trajectories(
+                    corners_by_frame, fi_sorted, smooth_window, sigma,
                 )
+                w_can, h_can = track.canonical_size
+                can_corners = np.array(
+                    [[0, 0], [w_can, 0], [w_can, h_can], [0, h_can]],
+                    dtype=np.float32,
+                )
+                for fi, sm_corners in smoothed.items():
+                    # Recover an effective H from canonical -> smoothed frame
+                    # corners via DLT (cv2.getPerspectiveTransform).
+                    try:
+                        H_smooth = cv2.getPerspectiveTransform(
+                            can_corners,
+                            sm_corners.astype(np.float32),
+                        )
+                        smoothed_H_map[(fi, track_id)] = H_smooth
+                    except cv2.error:
+                        pass
+            logger.debug(
+                "S5: temporal smoothing applied to %d tracks (window=%d, σ=%.1f)",
+                len(track_corners), smooth_window, sigma,
+            )
+
+        # ----- Pass 2: composite -----
+        output_frames = []
+        for frame_idx in sorted_idxs:
+            frame = frames[frame_idx].copy()
+
+            for prop_roi in propagated_rois.get(frame_idx, []):
+                track = tracks_by_id.get(prop_roi.track_id)
+                if track is None:
+                    continue
+                det = track.detections.get(frame_idx)
+                if det is None or not det.homography_valid or det.H_from_frontal is None:
+                    continue
+
+                key = (frame_idx, prop_roi.track_id)
+                delta_H = delta_H_map.get(key)
+
+                # Use the smoothed effective homography when available.
+                # It replaces H_from_frontal @ delta_H entirely — the
+                # smoothed H already maps canonical -> frame with both
+                # the original tracking and the refiner correction baked
+                # in, just temporally filtered.
+                smoothed_H = smoothed_H_map.get(key) if use_smoothing else None
+
+                if smoothed_H is not None:
+                    result = self.warp_roi_to_frame(
+                        prop_roi, smoothed_H, frame.shape[:2],
+                        delta_H=None,  # already baked in
+                    )
+                else:
+                    # Diagnostic: paint pure blue at the unrefined
+                    # warped-alpha region before compositing.
+                    if _REFINER_DIAGNOSTIC_BLUE and delta_H is not None:
+                        prop_roi.alpha_mask = np.ones_like(prop_roi.alpha_mask, dtype=np.float32)
+                        unref = self.warp_roi_to_frame(
+                            prop_roi, det.H_from_frontal, frame.shape[:2],
+                            delta_H=None,
+                        )
+                        if unref is not None:
+                            _, unref_alpha, unref_bbox = unref
+                            sl = unref_bbox.to_slice()
+                            mask_diag = unref_alpha > 0.0
+                            region = frame[sl]
+                            region[mask_diag] = (255, 0, 0)
+                            frame[sl] = region
+
+                    result = self.warp_roi_to_frame(
+                        prop_roi, det.H_from_frontal, frame.shape[:2],
+                        delta_H=delta_H,
+                    )
+
                 if result is None:
                     continue
 
                 warped_roi, warped_alpha, target_bbox = result
                 if _REFINER_DIAGNOSTIC_BLUE:
-                    # Force plain alpha compositing — seamlessClone would
-                    # smear the blue into halos via Poisson blending and
-                    # defeat the diagnostic.
                     frame = self.composite_roi_into_frame(
                         frame, warped_roi, warped_alpha, target_bbox
                     )

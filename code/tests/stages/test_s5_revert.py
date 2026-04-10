@@ -729,3 +729,155 @@ class TestRefinerIntegration:
         # same ref_canonical object (verifying the precompute happens once).
         assert len(ref_canonicals) == 3
         assert ref_canonicals[0] is ref_canonicals[1] is ref_canonicals[2]
+
+
+class TestTemporalSmoothing:
+    """Tests for the temporal corner smoothing feature."""
+
+    @staticmethod
+    def _make_multi_frame_track(
+        rng: np.random.Generator,
+        n_frames: int = 10,
+        canonical_size: tuple[int, int] = (120, 60),
+    ) -> tuple[TextTrack, dict[int, list[PropagatedROI]], dict[int, np.ndarray]]:
+        """Build a track spanning ``n_frames`` with identity homographies
+        and textured frames/ROIs for compositing."""
+        w_can, h_can = canonical_size
+        quad = Quad(points=np.array([
+            [30, 40], [150, 40], [150, 100], [30, 100]
+        ], dtype=np.float32))
+        track = TextTrack(
+            track_id=0,
+            source_text="HI",
+            target_text="HOLA",
+            source_lang="en",
+            target_lang="es",
+            detections={},
+            reference_frame_idx=0,
+            canonical_size=canonical_size,
+        )
+        frames: dict[int, np.ndarray] = {}
+        props: dict[int, list[PropagatedROI]] = {}
+        for fi in range(n_frames):
+            det = TextDetection(
+                frame_idx=fi,
+                quad=quad,
+                bbox=quad.to_bbox(),
+                text="HI",
+                ocr_confidence=0.9,
+                H_to_frontal=np.eye(3, dtype=np.float64),
+                H_from_frontal=np.eye(3, dtype=np.float64),
+                homography_valid=True,
+            )
+            track.detections[fi] = det
+            frames[fi] = rng.integers(0, 128, (200, 240, 3), dtype=np.uint8)
+            props[fi] = [PropagatedROI(
+                frame_idx=fi,
+                track_id=0,
+                roi_image=rng.integers(150, 256, (h_can, w_can, 3), dtype=np.uint8),
+                alpha_mask=np.ones((h_can, w_can), dtype=np.float32),
+                target_quad=quad,
+            )]
+        return track, props, frames
+
+    def test_smoothing_disabled_by_default(self, default_config):
+        assert default_config.revert.temporal_smooth_window == 1
+
+    def test_smoothing_window_1_is_noop(self, default_config):
+        """Window=1 should produce identical output to baseline."""
+        default_config.revert.temporal_smooth_window = 1
+        stage = RevertStage(default_config)
+        rng = np.random.default_rng(0)
+        track, props, frames = self._make_multi_frame_track(rng, n_frames=5)
+        out = stage.run(frames, props, [track])
+        assert len(out) == 5
+
+    def test_smoothing_runs_without_crash(self, default_config):
+        """Window=5 should complete without errors."""
+        default_config.revert.temporal_smooth_window = 5
+        default_config.revert.temporal_smooth_sigma = 2.0
+        stage = RevertStage(default_config)
+        rng = np.random.default_rng(1)
+        track, props, frames = self._make_multi_frame_track(rng, n_frames=10)
+        out = stage.run(frames, props, [track])
+        assert len(out) == 10
+
+    def test_smoothing_reduces_corner_jitter(self, default_config):
+        """Inject artificial jitter into H_from_frontal and verify that
+        smoothing produces smaller frame-to-frame corner variation.
+
+        Uses ``_project_canonical_to_frame`` directly to measure geometric
+        jitter on the projected corners — avoids conflating ROI content
+        differences with geometric instability.
+        """
+        rng = np.random.default_rng(2)
+        n_frames = 20
+        canonical_size = (120, 60)
+        w_can, h_can = canonical_size
+        can_corners = np.array(
+            [[0, 0], [w_can, 0], [w_can, h_can], [0, h_can]],
+            dtype=np.float64,
+        )
+
+        # Build jittered H_from_frontal per frame
+        raw_corners: dict[int, np.ndarray] = {}
+        H_list: list[np.ndarray] = []
+        for fi in range(n_frames):
+            jx = rng.normal(0, 3.0)
+            jy = rng.normal(0, 2.0)
+            H = np.array([
+                [1.0, 0.0, jx],
+                [0.0, 1.0, jy],
+                [0.0, 0.0, 1.0],
+            ], dtype=np.float64)
+            H_list.append(H)
+            proj = RevertStage._project_canonical_to_frame(H, can_corners)
+            raw_corners[fi] = proj
+
+        # Smooth
+        fi_sorted = list(range(n_frames))
+        smoothed = RevertStage._smooth_corner_trajectories(
+            raw_corners, fi_sorted, window=7, sigma=2.0,
+        )
+
+        # Measure frame-to-frame corner displacement
+        def _corner_jitter(corners_dict: dict[int, np.ndarray]) -> float:
+            diffs = []
+            for i in range(n_frames - 1):
+                d = np.linalg.norm(corners_dict[i] - corners_dict[i + 1], axis=1)
+                diffs.append(d.mean())
+            return float(np.mean(diffs))
+
+        jitter_raw = _corner_jitter(raw_corners)
+        jitter_smooth = _corner_jitter(smoothed)
+
+        assert jitter_smooth < jitter_raw, (
+            f"smoothing did not reduce corner jitter: raw={jitter_raw:.3f}, "
+            f"smooth={jitter_smooth:.3f}"
+        )
+
+    def test_smooth_corner_trajectories_unit(self):
+        """Direct test of the static smoothing helper."""
+        # 5 frames with a spike at frame 2
+        trajectories = {
+            0: np.array([[10, 20], [110, 20], [110, 70], [10, 70]], dtype=np.float64),
+            1: np.array([[10, 20], [110, 20], [110, 70], [10, 70]], dtype=np.float64),
+            2: np.array([[20, 30], [120, 30], [120, 80], [20, 80]], dtype=np.float64),  # spike
+            3: np.array([[10, 20], [110, 20], [110, 70], [10, 70]], dtype=np.float64),
+            4: np.array([[10, 20], [110, 20], [110, 70], [10, 70]], dtype=np.float64),
+        }
+        smoothed = RevertStage._smooth_corner_trajectories(
+            trajectories, [0, 1, 2, 3, 4], window=3, sigma=1.0,
+        )
+        # The spike at frame 2 should be attenuated toward the
+        # surrounding values (10, 20).
+        spike_raw = trajectories[2][0, 0]    # 20
+        spike_smooth = smoothed[2][0, 0]
+        baseline = trajectories[0][0, 0]     # 10
+        assert baseline < spike_smooth < spike_raw, (
+            f"expected spike attenuation: baseline={baseline}, "
+            f"smooth={spike_smooth}, raw={spike_raw}"
+        )
+        # Non-spike frames should be nearly unchanged.
+        assert np.allclose(smoothed[0], trajectories[0], atol=2.0)
+        assert np.allclose(smoothed[4], trajectories[4], atol=2.0)

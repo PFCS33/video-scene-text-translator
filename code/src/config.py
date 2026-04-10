@@ -146,6 +146,19 @@ class RevertConfig:
     use_refiner_gate: bool = True
     refiner_score_margin: float = 0.01
 
+    # Temporal smoothing of the final projected quad corners across
+    # frames within each track. Applies a center-weighted (Gaussian)
+    # moving average to the 4 corner trajectories in frame space,
+    # reducing both CoTracker tracking jitter and refiner prediction
+    # noise. Works with or without the refiner — when the refiner is
+    # off, smooths the raw H_from_frontal projections.
+    # Set to 1 to disable (no smoothing). Minimum effective value is 3.
+    temporal_smooth_window: int = 1
+    # Gaussian sigma for the smoothing kernel, in frames. A good
+    # starting value is window_size / 4 (σ≈2 for window=7).
+    # Smaller σ → sharper center weight → less smoothing.
+    temporal_smooth_sigma: float = 2.0
+
 
 @dataclass
 class TextEditorConfig:
