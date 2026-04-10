@@ -98,7 +98,6 @@ def compute_adaptive_mask_rect(
     canonical_h: int,
     target_text: str,
     tolerance: float,
-    min_ratio: float,
 ) -> tuple[int, int, int, int] | None:
     """Compute a centered mask rectangle for AnyText2 adaptive mask sizing.
 
@@ -114,9 +113,8 @@ def compute_adaptive_mask_rect(
     - Target's natural aspect is **wider** than the source canonical
       (long→short only; we never grow the mask — see plan.md D9)
 
-    When a rectangle is returned, its width is clamped to
-    ``[min_ratio * canonical_w, canonical_w]`` so AnyText2 is never asked
-    to render into a mask too small for stable generation.
+    When a rectangle is returned, its width is clamped to at most
+    *canonical_w* (never wider than the source canonical).
 
     Args:
         canonical_w: Width of the canonical (frontalized) text area in pixels.
@@ -124,7 +122,6 @@ def compute_adaptive_mask_rect(
         target_text: The translated string that will be rendered.
         tolerance: If ``|target_aspect - source_aspect| / source_aspect``
             is strictly less than this, skip the adaptive flow.
-        min_ratio: Minimum mask width as a fraction of *canonical_w*.
 
     Returns:
         ``(top, bottom, left, right)`` integer slice or ``None``.
@@ -148,9 +145,8 @@ def compute_adaptive_mask_rect(
     if mismatch < tolerance:
         return None
 
-    # Clamp to [min_ratio * canonical_w, canonical_w]
-    min_w = int(round(min_ratio * canonical_w))
-    mask_w = max(min_w, int(round(target_width_px)))
+    # Clamp to at most canonical_w
+    mask_w = int(round(target_width_px))
     mask_w = min(mask_w, canonical_w)
 
     # Centered horizontally

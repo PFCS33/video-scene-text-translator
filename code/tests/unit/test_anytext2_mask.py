@@ -103,17 +103,16 @@ class TestComputeAdaptiveMaskRect:
     - Target is wider than source (long→short only, never grow)
 
     Otherwise returns a horizontally centered rect with height = canonical_h
-    and width clamped to [min_ratio * canonical_w, canonical_w].
+    and width clamped to canonical_w (never wider than source).
     """
 
     def _rect(self, canonical_w, canonical_h, target_text,
-              tolerance=0.15, min_ratio=0.25):
+              tolerance=0.15):
         return compute_adaptive_mask_rect(
             canonical_w=canonical_w,
             canonical_h=canonical_h,
             target_text=target_text,
             tolerance=tolerance,
-            min_ratio=min_ratio,
         )
 
     # --- Skip cases (return None) ---
@@ -167,14 +166,13 @@ class TestComputeAdaptiveMaskRect:
         assert right - left == 96
         assert left == 72  # (240 - 96) // 2
 
-    def test_very_narrow_target_clamps_to_min_ratio(self):
-        # source = 800, target "a" (40 px) → want 40, but min_ratio 0.25 × 800 = 200
-        # → clamp to 200
-        rect = self._rect(800, 80, "a", min_ratio=0.25)
+    def test_very_narrow_target_not_clamped(self):
+        # source = 800, target "a" (40 px) → mask_w = 40, no floor clamping
+        rect = self._rect(800, 80, "a")
         assert rect is not None
         _, _, left, right = rect
-        assert right - left == 200
-        assert left == 300  # (800 - 200) // 2
+        assert right - left == 40
+        assert left == (800 - 40) // 2  # 380
 
     def test_centered_rect_odd_width(self):
         # canonical_w = 701 odd, target produces even width → centered (integer floor)
@@ -199,14 +197,6 @@ class TestComputeAdaptiveMaskRect:
         # Tighter tolerance 0.10: same case now triggers shrink
         rect = self._rect(240, 80, "Hello", tolerance=0.10)
         assert rect is not None
-
-    def test_min_ratio_parameter_controls_floor(self):
-        # With min_ratio 0.5, even "我是示" (240 px wide) in 800-wide canonical
-        # would normally give 240, but min is 400 → clamp to 400
-        rect = self._rect(800, 80, "我是示", min_ratio=0.5)
-        assert rect is not None
-        _, _, left, right = rect
-        assert right - left == 400
 
     def test_returned_rect_is_tuple_of_ints(self):
         rect = self._rect(560, 80, "我是示")

@@ -299,7 +299,6 @@ class AnyText2Editor(BaseTextEditor):
             canonical_h=canonical_h,
             target_text=target_text,
             tolerance=self.config.anytext2_mask_aspect_tolerance,
-            min_ratio=self.config.anytext2_mask_min_ratio,
         )
         if adaptive_rect is None:
             return roi_image, edit_region

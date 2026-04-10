@@ -145,9 +145,6 @@ class TextEditorConfig:
     # is below this fraction. Common translation cases with similar visual
     # width (DANGER→PELIGRO, STOP→ALTO) bypass the inpaint + shrink path.
     anytext2_mask_aspect_tolerance: float = 0.15
-    # Never shrink mask below this fraction of canonical width. AnyText2's
-    # generation quality collapses on very small masks.
-    anytext2_mask_min_ratio: float = 0.25
 
 
 @dataclass

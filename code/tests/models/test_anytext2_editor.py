@@ -552,7 +552,6 @@ class TestAdaptiveMask:
             anytext2_ddim_steps=5,
             anytext2_adaptive_mask=True,
             anytext2_mask_aspect_tolerance=0.15,
-            anytext2_mask_min_ratio=0.25,
         )
         for k, v in overrides.items():
             setattr(cfg, k, v)

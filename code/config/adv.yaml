@@ -100,4 +100,3 @@ text_editor:
   # Requires propagation.inpainter_backend to be set (reuses the S4 inpainter).
   anytext2_adaptive_mask: true
   anytext2_mask_aspect_tolerance: 0.15   # skip if mismatch is below this fraction
-  anytext2_mask_min_ratio: 0.25          # don't shrink below this × canonical width
