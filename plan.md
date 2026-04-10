@@ -163,4 +163,59 @@ The existing `edit_region` mechanism (which marks the inner canonical area withi
   2. *Second attempt (shipped)*: disable Mimic From Image entirely in the adaptive path. `_call_server` now takes a `use_mimic: bool = True` kwarg; when False, it sends `f1="No Font(不指定字体)"` and `m1=null_img`. `edit_text` sets `use_mimic=not adaptive_fired`. Non-adaptive cases are unchanged.
   
   **Tradeoff accepted**: adaptive-path outputs render with AnyText2's default font (no style match to source). Given that the alternative is either italic-slant glyphs or tile-border artifacts, this is strictly better. Tests: `test_long_to_short_triggers_inpaint_and_narrows_mask` now also asserts `f1` starts with "No Font" and `m1` background is None when adaptive fires. `_capture_masks` helper reverted to list-based since only one mask file is written. E2E verified on real_video6 en→zh: output reads `典狱长` — upright, no borders, no slant, clean background. Saved to `test_data/output_adaptive_on_v4_nofont_en_zh_2026-04-09.mp4`. 43 editor tests green, 234 total passed (4 pre-existing `test_s5_revert.py` failures unchanged), ruff clean.
-- [ ] **Step 16** — Commit as atomic commits + open PR.
+- [ ] **Step 16** — Adaptive crop: improve mask-to-canvas ratio by cropping a mask-centered sub-canvas inside the editor before sending to AnyText2.
+
+  **Problem**: After adaptive mask shrinks the mask (e.g., 240px in a 1120px expanded canvas), AnyText2 sees a 21% mask-to-canvas ratio — too low for quality output.
+
+  **Approach (Option B — crop in editor)**:
+  1. After `_apply_adaptive_mask` fires, compute a crop box centered on the mask with mask-proportional expansion (mask_w × 0.3 horizontal, h × 0.3 vertical)
+  2. Crop sub-canvas from the hybrid expanded ROI → e.g., 384×128
+  3. `_prepare_roi` + `_call_server` operate on the smaller canvas → ratio 62%
+  4. m1 unchanged: uses its own `_prepare_roi` with pre-adaptive ROI dimensions
+  5. Paste AnyText2 result back into expanded canvas at crop position
+  6. Return expanded canvas → S3 crops to canonical as before (zero S3 changes)
+
+  **Decisions**:
+  - **D15** Crop, not re-warp. Reuse the existing expanded warp; crop a sub-region inside the editor. S3 stays unchanged. Context around mask is SRNet-inpainted background (clean, which is what AnyText2 expects).
+  - **D16** Expansion ratio for crop uses the same `roi_context_expansion` config value (default 0.3). No new config field.
+  - **D17** m1 (mimic) path unchanged in logic. Fix latent bug: mimic mask array must use mimic-prepared dimensions, not main canvas dimensions.
+  - **D18** Feather at crop-paste boundary: reuse `_ADAPTIVE_STRIP_FEATHER_PX` (3px) to blend the sub-canvas result back into the expanded canvas, avoiding seams.
+  - **D19** Crop clamped to expanded canvas bounds. If mask is near canonical edge, crop shifts asymmetrically (mask is off-center in the crop).
+
+  Sub-steps:
+  - [x] **16a** — 9 unit tests for `compute_adaptive_crop_box` (centered, no-expansion, edge clamping, containment, large expansion).
+  - [x] **16b** — Implemented `compute_adaptive_crop_box` in `anytext2_mask.py`.
+  - [x] **16c** — Failing editor test: `test_adaptive_crop_sends_smaller_canvas` checks w/h sent to server.
+  - [x] **16d** — Modified `edit_text`: crop sub-canvas before `_prepare_roi`, paste back after server result. Fixed mimic mask to use mimic-prepared dimensions. Updated existing mask ratio test for the tighter canvas.
+  - [x] **16e** — 243 passed (4 pre-existing S5 failures unchanged), ruff clean.
+  - [x] **16f** — E2E: Vijay style regression (green/teal) caused by SRNet inpaint artifacts in ref_img polluting AnyText2's diffusion. See Step 16g fix.
+  - [ ] **16g** — Send raw scene to AnyText2, post-composite with SRNet clean background.
+
+  **Problem**: SRNet inpaint leaves colored artifacts in the ref_img background (especially visible on light backgrounds like the birthday card). AnyText2's diffusion picks up these artifacts and produces wrong-style text.
+
+  **Fix**: Don't send inpainted pixels to AnyText2. Instead:
+  1. Crop from **original scene** (not hybrid) → AnyText2 sees natural pixels, no SRNet artifacts
+  2. After AnyText2 returns, **only take the mask area** from the result
+  3. Paste mask area onto the **hybrid ROI** (which has SRNet clean background outside the mask)
+
+  `_apply_adaptive_mask` stays unchanged — it still produces the hybrid (needed for the post-composite background). Only the crop source and paste-back logic in `edit_text` change:
+
+  ```
+  # Crop: use original scene, not hybrid
+  - roi_image = roi_image[cbt:cbb, cbl:cbr].copy()
+  + roi_image = mimic_roi_image[cbt:cbb, cbl:cbr].copy()
+
+  # Paste-back: only take mask area from AnyText2, rest from hybrid
+  - final[cbt:cbb, cbl:cbr] = result_content          # whole crop
+  + final[aet:aeb, ael:aer] = result_content[met:meb, mel:mer]  # mask only
+  ```
+
+  Sub-steps:
+  - [ ] **16g-i** — Write failing test: ref_img sent to server has original pixels (not inpainted value 42)
+  - [ ] **16g-ii** — Change crop source + paste-back in `edit_text`
+  - [ ] **16g-iii** — Run tests + ruff
+  - [ ] **16g-iv** — E2E on video 16, compare with debug images
+
+  Also: raise `anytext2_mask_aspect_tolerance` from 0.15 → 0.30 in both yaml configs + default.
+
+- [ ] **Step 17** — Commit as atomic commits + open PR.
