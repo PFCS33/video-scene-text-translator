@@ -155,6 +155,45 @@ def compute_adaptive_mask_rect(
     return (0, canonical_h, left, right)
 
 
+def compute_adaptive_crop_box(
+    canvas_h: int,
+    canvas_w: int,
+    mask_rect: tuple[int, int, int, int],
+    expansion_ratio: float,
+) -> tuple[int, int, int, int]:
+    """Compute a crop box centered on the mask with mask-proportional expansion.
+
+    Used after the adaptive mask flow to crop a tight sub-canvas from the
+    expanded ROI before sending to AnyText2.  The crop is centered on the
+    mask with margins proportional to the *mask* dimensions (not the full
+    canonical), giving a much better mask-to-canvas ratio.
+
+    Args:
+        canvas_h: Height of the full expanded canvas.
+        canvas_w: Width of the full expanded canvas.
+        mask_rect: ``(top, bottom, left, right)`` of the mask in canvas coords.
+        expansion_ratio: Expansion per side as a fraction of mask dimensions
+            (e.g. 0.3 = 30%).
+
+    Returns:
+        ``(top, bottom, left, right)`` crop box in canvas coords, clamped to
+        canvas bounds.  Always contains the mask.
+    """
+    mt, mb, ml, mr = mask_rect
+    mask_h = mb - mt
+    mask_w = mr - ml
+
+    margin_y = int(round(mask_h * expansion_ratio))
+    margin_x = int(round(mask_w * expansion_ratio))
+
+    top = max(0, mt - margin_y)
+    bot = min(canvas_h, mb + margin_y)
+    left = max(0, ml - margin_x)
+    right = min(canvas_w, mr + margin_x)
+
+    return (top, bot, left, right)
+
+
 def restore_middle_strip(
     inpainted: np.ndarray,
     original: np.ndarray,

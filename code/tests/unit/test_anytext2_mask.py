@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from src.models.anytext2_mask import (
+    compute_adaptive_crop_box,
     compute_adaptive_mask_rect,
     estimate_target_width,
     restore_middle_strip,
@@ -338,3 +339,110 @@ class TestRestoreMiddleStrip:
         )
         # Entire canvas is the strip → entire canvas is original
         assert np.all(result == 255)
+
+
+class TestComputeAdaptiveCropBox:
+    """Compute a crop box centered on the mask with mask-proportional expansion.
+
+    The crop box allows sending a smaller, tighter canvas to AnyText2
+    instead of the full expanded ROI.  Expansion margins are based on
+    the mask dimensions (not the canonical), giving a much better
+    mask-to-canvas ratio.
+    """
+
+    def test_centered_mask_in_large_canvas(self):
+        # canvas 1120×128, mask (24,104,440,680) → 240×80
+        # margin_x = round(240*0.3) = 72, margin_y = round(80*0.3) = 24
+        # crop = (24-24, 104+24, 440-72, 680+72) = (0, 128, 368, 752)
+        box = compute_adaptive_crop_box(
+            canvas_h=128, canvas_w=1120,
+            mask_rect=(24, 104, 440, 680),
+            expansion_ratio=0.3,
+        )
+        assert box == (0, 128, 368, 752)
+
+    def test_no_expansion_returns_mask_rect(self):
+        box = compute_adaptive_crop_box(
+            canvas_h=128, canvas_w=1120,
+            mask_rect=(24, 104, 440, 680),
+            expansion_ratio=0.0,
+        )
+        assert box == (24, 104, 440, 680)
+
+    def test_clamps_left_to_zero(self):
+        # mask near left edge → crop left would go negative
+        box = compute_adaptive_crop_box(
+            canvas_h=128, canvas_w=500,
+            mask_rect=(24, 104, 10, 100),
+            expansion_ratio=0.3,
+        )
+        top, bot, left, right = box
+        assert left == 0
+        assert top >= 0
+        assert bot <= 128
+        # Crop still contains the mask
+        assert right >= 100
+
+    def test_clamps_right_to_canvas(self):
+        # mask near right edge → crop right would exceed canvas
+        box = compute_adaptive_crop_box(
+            canvas_h=128, canvas_w=500,
+            mask_rect=(24, 104, 400, 490),
+            expansion_ratio=0.3,
+        )
+        top, bot, left, right = box
+        assert right == 500
+        assert left <= 400
+
+    def test_clamps_top_and_bottom(self):
+        # Small canvas vertically → crop clamps on both sides
+        box = compute_adaptive_crop_box(
+            canvas_h=80, canvas_w=1000,
+            mask_rect=(0, 80, 400, 640),
+            expansion_ratio=0.3,
+        )
+        top, bot, left, right = box
+        assert top == 0
+        assert bot == 80
+
+    def test_crop_always_contains_mask(self):
+        # Regardless of clamping, the mask must be inside the crop
+        mask = (24, 104, 440, 680)
+        box = compute_adaptive_crop_box(
+            canvas_h=128, canvas_w=1120,
+            mask_rect=mask,
+            expansion_ratio=0.3,
+        )
+        ct, cb, cl, cr = box
+        mt, mb, ml, mr = mask
+        assert ct <= mt and cb >= mb and cl <= ml and cr >= mr
+
+    def test_crop_contains_mask_when_clamped(self):
+        mask = (5, 85, 10, 100)
+        box = compute_adaptive_crop_box(
+            canvas_h=100, canvas_w=200,
+            mask_rect=mask,
+            expansion_ratio=0.5,
+        )
+        ct, cb, cl, cr = box
+        mt, mb, ml, mr = mask
+        assert ct <= mt and cb >= mb and cl <= ml and cr >= mr
+
+    def test_returns_tuple_of_ints(self):
+        box = compute_adaptive_crop_box(
+            canvas_h=128, canvas_w=1120,
+            mask_rect=(24, 104, 440, 680),
+            expansion_ratio=0.3,
+        )
+        assert len(box) == 4
+        for v in box:
+            assert isinstance(v, int)
+
+    def test_large_expansion_clamps_to_canvas(self):
+        # Very large expansion ratio → crop equals full canvas
+        box = compute_adaptive_crop_box(
+            canvas_h=128, canvas_w=500,
+            mask_rect=(24, 104, 200, 300),
+            expansion_ratio=5.0,
+        )
+        assert box == (0, 128, 0, 500)

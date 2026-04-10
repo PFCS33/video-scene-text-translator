@@ -561,7 +561,7 @@ class TestAdaptiveMask:
     @patch.dict("sys.modules", {"gradio_client": MagicMock(handle_file=_make_mock_handle_file())})
     def test_long_to_short_triggers_inpaint_and_narrows_mask(self, mock_get_client):
         """7:1 canonical + 3-char CJK target → mask should shrink + inpainter runs."""
-        cfg = self._adaptive_config()
+        cfg = self._adaptive_config(roi_context_expansion=0.3)
         inpainter = _FakeInpainter()
         editor = AnyText2Editor(cfg, inpainter=inpainter)
 
@@ -584,19 +584,21 @@ class TestAdaptiveMask:
         assert "mask.png" in captured
         assert "mimic_mask.png" in captured
 
-        # Main edit mask is narrowed toward the target aspect ratio
+        # Main edit mask is narrowed, sent on a tighter (cropped) canvas.
+        # With crop, mask covers ~62% of the smaller canvas — still less
+        # than 100% but higher than the pre-crop ~43%.
         main_alpha = captured["mask.png"][:, :, 3]
         main_cols = int((main_alpha[main_alpha.shape[0] // 2] == 255).sum())
-        total_cols = main_alpha.shape[1]
-        # New mask ≈ 240/560 × total_cols ≈ 43% of the width
-        assert main_cols < 0.6 * total_cols
+        main_total = main_alpha.shape[1]
+        assert main_cols < 0.75 * main_total
 
-        # Font-mimic mask preserves the original (wide) extent so the
-        # font encoder sees complete source glyphs.
+        # Font-mimic mask: on its own (larger) canvas, covers nearly all
+        # columns so the font encoder sees complete source glyphs.
         mimic_alpha = captured["mimic_mask.png"][:, :, 3]
         mimic_cols = int((mimic_alpha[mimic_alpha.shape[0] // 2] == 255).sum())
+        mimic_total = mimic_alpha.shape[1]
         assert mimic_cols > main_cols
-        assert mimic_cols >= 0.9 * total_cols
+        assert mimic_cols >= 0.9 * mimic_total
 
     @patch("src.models.anytext2_editor.AnyText2Editor._get_client")
     @patch.dict("sys.modules", {"gradio_client": MagicMock(handle_file=_make_mock_handle_file())})
@@ -704,6 +706,42 @@ class TestAdaptiveMask:
             editor.edit_text(roi, "我是示")
 
         assert np.array_equal(roi, roi_snapshot)
+
+    @patch.dict("sys.modules", {"gradio_client": MagicMock(handle_file=_make_mock_handle_file())})
+    def test_adaptive_crop_sends_smaller_canvas(self):
+        """When adaptive fires with expanded ROI, server receives a tighter canvas.
+
+        Expanded ROI is 1120×128 (canonical 700×80 + 30% expansion).
+        Target "我是示" → adaptive mask 240px → crop ~384×128.
+        After _prepare_roi: ~512×256 instead of ~1024×256.
+        """
+        cfg = self._adaptive_config(roi_context_expansion=0.3)
+        inpainter = _FakeInpainter()
+        editor = AnyText2Editor(cfg, inpainter=inpainter)
+
+        # Simulate expanded ROI: 700×80 canonical + 30% expansion
+        roi = np.full((128, 1120, 3), 200, dtype=np.uint8)
+        edit_region = (24, 104, 210, 910)  # canonical within expanded
+
+        server_calls = []
+
+        def fake_call_server(
+            ori_path, mask_path, target_text, text_color, w, h, **kwargs,
+        ):
+            server_calls.append({"w": w, "h": h})
+            return np.full((h, w, 3), 128, dtype=np.uint8)
+
+        with patch.object(editor, "_call_server", side_effect=fake_call_server):
+            result = editor.edit_text(roi, "我是示", edit_region=edit_region)
+
+        assert len(server_calls) == 1
+        w_sent = server_calls[0]["w"]
+        # Without crop: _prepare_roi(1120×128) → w ≈ 1024
+        # With crop (~384×128): _prepare_roi → w ≈ 512
+        assert w_sent <= 640, f"Expected smaller canvas w, got w={w_sent}"
+
+        # Result must still match the original expanded ROI shape
+        assert result.shape == (128, 1120, 3)
 
 
 class TestS3InpainterWiring:

@@ -21,6 +21,7 @@ import numpy as np
 
 from src.config import TextEditorConfig
 from src.models.anytext2_mask import (
+    compute_adaptive_crop_box,
     compute_adaptive_mask_rect,
     restore_middle_strip,
 )
@@ -157,6 +158,24 @@ class AnyText2Editor(BaseTextEditor):
         )
         adaptive_fired = roi_image is not mimic_roi_image
 
+        # When adaptive fired, crop a tight sub-canvas around the mask
+        # so AnyText2 sees a better mask-to-canvas ratio.  The full
+        # hybrid ROI is kept for paste-back after server returns.
+        crop_box = None
+        if adaptive_fired and edit_region is not None:
+            crop_box = compute_adaptive_crop_box(
+                canvas_h=roi_image.shape[0],
+                canvas_w=roi_image.shape[1],
+                mask_rect=edit_region,
+                expansion_ratio=self.config.roi_context_expansion,
+            )
+            cbt, cbb, cbl, cbr = crop_box
+            full_hybrid_roi = roi_image
+            roi_image = roi_image[cbt:cbb, cbl:cbr].copy()
+            # Shift edit_region to crop-relative coordinates
+            a_t, a_b, a_l, a_r = edit_region
+            edit_region = (a_t - cbt, a_b - cbt, a_l - cbl, a_r - cbl)
+
         # Upscale, 64-align, and pad — returns prepared image + content region
         min_gen = self.config.anytext2_min_gen_size
         roi_prepared, content_rect, scale = self._prepare_roi(roi_image, min_gen)
@@ -206,16 +225,29 @@ class AnyText2Editor(BaseTextEditor):
                 mimic_ori_path = str(Path(tmpdir) / "mimic_ori.png")
                 mimic_mask_path = str(Path(tmpdir) / "mimic_mask.png")
 
-                mimic_prepared, _, _ = self._prepare_roi(
+                mimic_prepared, mimic_cr, mimic_sc = self._prepare_roi(
                     mimic_roi_image, min_gen,
                 )
+                h_mimic, w_mimic = mimic_prepared.shape[:2]
                 if not cv2.imwrite(mimic_ori_path, mimic_prepared):
                     raise RuntimeError(
                         f"Failed to write mimic ROI to {mimic_ori_path}"
                     )
 
-                mmt, mmb, mml, mmr = _rect_for_region(mimic_edit_region)
-                mimic_mask_arr = np.zeros((h_send, w_send, 4), dtype=np.uint8)
+                # Mimic mask uses its own prepared dimensions (may differ
+                # from the main canvas when adaptive crop is active).
+                mct, mcb, mcl, mcr = mimic_cr
+                if mimic_edit_region is not None:
+                    mr_t, mr_b, mr_l, mr_r = mimic_edit_region
+                    mmt = max(0, mct + int(round(mr_t * mimic_sc)))
+                    mmb = min(h_mimic, mct + int(round(mr_b * mimic_sc)))
+                    mml = max(0, mcl + int(round(mr_l * mimic_sc)))
+                    mmr = min(w_mimic, mcl + int(round(mr_r * mimic_sc)))
+                else:
+                    mmt, mmb, mml, mmr = mimic_cr
+                mimic_mask_arr = np.zeros(
+                    (h_mimic, w_mimic, 4), dtype=np.uint8,
+                )
                 mimic_mask_arr[mmt:mmb, mml:mmr, 3] = 255
                 if not cv2.imwrite(mimic_mask_path, mimic_mask_arr):
                     raise RuntimeError(
@@ -228,8 +260,21 @@ class AnyText2Editor(BaseTextEditor):
                 mimic_mask_path=mimic_mask_path,
             )
 
-        # Crop out the content region (strip padding), then resize to original
+        # Crop out the content region (strip padding)
         result_content = result_image[ct:cb, cl:cr]
+
+        if crop_box is not None:
+            # Resize sub-canvas result to crop dimensions, paste into full ROI
+            crop_h, crop_w = cbb - cbt, cbr - cbl
+            if result_content.shape[:2] != (crop_h, crop_w):
+                result_content = cv2.resize(
+                    result_content, (crop_w, crop_h),
+                    interpolation=cv2.INTER_LANCZOS4,
+                )
+            final = full_hybrid_roi.copy()
+            final[cbt:cbb, cbl:cbr] = result_content
+            return final
+
         if result_content.shape[:2] != (h_orig, w_orig):
             result_content = cv2.resize(
                 result_content, (w_orig, h_orig), interpolation=cv2.INTER_LANCZOS4,
