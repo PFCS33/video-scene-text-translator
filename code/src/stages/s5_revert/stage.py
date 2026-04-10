@@ -52,6 +52,8 @@ class RevertStage:
                 device=self.config.refiner_device,
                 image_size=tuple(self.config.refiner_image_size),
                 max_corner_offset_px=self.config.refiner_max_corner_offset_px,
+                use_gate=self.config.use_refiner_gate,
+                score_margin=self.config.refiner_score_margin,
             )
 
     def warp_roi_to_frame(

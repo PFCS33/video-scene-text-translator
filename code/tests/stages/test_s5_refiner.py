@@ -124,8 +124,16 @@ def test_zero_size_returns_none(tiny_checkpoint: Path):
 def test_untrained_model_returns_near_identity(tiny_checkpoint: Path):
     """With head_init_scale=1e-3 the untrained model should produce
     near-zero corner offsets, so ΔH should pass all sanity checks and
-    come out close to the identity matrix."""
-    refiner = RefinerInference(checkpoint_path=str(tiny_checkpoint), device="cpu")
+    come out close to the identity matrix.
+
+    Gate disabled: this tests the sanity-check path, not the gate.
+    An untrained model's near-identity output can't reliably clear the
+    gate's NCC margin on random inputs.
+    """
+    refiner = RefinerInference(
+        checkpoint_path=str(tiny_checkpoint), device="cpu",
+        use_gate=False,
+    )
     rng = np.random.default_rng(0)
     ref = rng.integers(0, 256, (80, 200, 3), dtype=np.uint8)
     tgt = rng.integers(0, 256, (80, 200, 3), dtype=np.uint8)
@@ -165,10 +173,13 @@ def test_scale_unscales_to_canonical(tiny_checkpoint: Path):
     the scale should be ``320 / 128 = 2.5x`` in x and ``160 / 64 = 2.5x``
     in y. A pure +8 px x translation in network coords should become a
     pure +20 px x translation in canonical coords.
+
+    Gate disabled: this tests scale math, not the gate. All-zero ROIs
+    produce undefined NCC and can't clear the gate's margin.
     """
     refiner = RefinerInference(
         checkpoint_path=str(tiny_checkpoint), device="cpu",
-        max_corner_offset_px=100.0,
+        max_corner_offset_px=100.0, use_gate=False,
     )
     # Pure +8 x-translation at every corner at network resolution
     delta_net = np.array(
@@ -192,10 +203,13 @@ def test_scale_unscales_to_canonical(tiny_checkpoint: Path):
 def test_scale_anisotropic(tiny_checkpoint: Path):
     """Canonical (64, 256) has x-scale 2.0 and y-scale 1.0 against the
     (64, 128) network. Pure +1 y corner delta should stay +1 y in canonical,
-    pure +1 x corner delta should become +2 x."""
+    pure +1 x corner delta should become +2 x.
+
+    Gate disabled: tests scale math, not the gate.
+    """
     refiner = RefinerInference(
         checkpoint_path=str(tiny_checkpoint), device="cpu",
-        max_corner_offset_px=100.0,
+        max_corner_offset_px=100.0, use_gate=False,
     )
     delta_net = np.array(
         [[1.0, 1.0], [1.0, 1.0], [1.0, 1.0], [1.0, 1.0]]
@@ -359,3 +373,201 @@ def test_predicted_H_approximately_aligns_known_warp(tiny_checkpoint: Path):
     )
     # Small warp + bilinear roundoff; be lenient.
     assert diff.mean() < 5.0, f"mean diff too large: {diff.mean()}"
+
+
+# ---------------------------------------------------------------------------
+# Tier 1: Do-no-harm gate
+# ---------------------------------------------------------------------------
+
+
+def _make_textured_pair_with_known_shift(
+    H_can: int, W_can: int, dx: float, dy: float, seed: int = 0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Build (ref, tgt, delta_H_net) where ``tgt = warp(ref, translation by (dx, dy))``.
+
+    The returned ``delta_H_net`` is the per-corner offset (in network
+    pixels) that, after the wrapper's scale conversion, will produce a
+    canonical-space ΔH equal to the true translation.
+    """
+    rng = np.random.default_rng(seed)
+    ref = rng.integers(0, 256, (H_can, W_can, 3), dtype=np.uint8)
+    # Add bright vertical bars and a horizontal stripe so the image has
+    # real edges (NCC needs gradient signal to be meaningful).
+    ref[:, 20::32] = 255
+    ref[H_can // 2 - 5: H_can // 2 + 5, :] = (
+        np.clip(ref[H_can // 2 - 5: H_can // 2 + 5, :].astype(int) + 60, 0, 255).astype(np.uint8)
+    )
+    src_corners = np.array(
+        [[0, 0], [W_can, 0], [W_can, H_can], [0, H_can]], dtype=np.float32,
+    )
+    delta_canonical = np.array(
+        [[dx, dy], [dx, dy], [dx, dy], [dx, dy]], dtype=np.float32,
+    )
+    H_true = cv2.getPerspectiveTransform(src_corners, src_corners + delta_canonical)
+    tgt = cv2.warpPerspective(ref, H_true, (W_can, H_can))
+
+    # Convert canonical-pixel delta to network-pixel delta so the wrapper
+    # rescales back to the same canonical delta.
+    H_net, W_net = 64, 128
+    scale = np.array([W_can / W_net, H_can / H_net], dtype=np.float64)
+    delta_net = (delta_canonical / scale).astype(np.float32)
+    return ref, tgt, delta_net
+
+
+def test_gate_default_on_for_construction(tiny_checkpoint: Path):
+    """Constructor enables the gate by default with a conservative margin."""
+    refiner = RefinerInference(checkpoint_path=str(tiny_checkpoint), device="cpu")
+    assert refiner.use_gate is True
+    assert refiner.score_margin == 0.01
+
+
+def test_gate_disabled_via_constructor(tiny_checkpoint: Path):
+    """Caller can opt out of the gate at construction time."""
+    refiner = RefinerInference(
+        checkpoint_path=str(tiny_checkpoint), device="cpu",
+        use_gate=False,
+    )
+    assert refiner.use_gate is False
+
+
+def test_gate_accepts_when_refiner_improves_alignment(tiny_checkpoint: Path):
+    """Gate ON: a model that predicts the correct ΔH for a known shift
+    should produce a positive NCC gain → gate accepts."""
+    refiner = RefinerInference(
+        checkpoint_path=str(tiny_checkpoint), device="cpu",
+        max_corner_offset_px=100.0, use_gate=True,
+    )
+    H_can, W_can = 96, 192
+    ref, tgt, delta_net = _make_textured_pair_with_known_shift(
+        H_can, W_can, dx=4.0, dy=2.0, seed=0,
+    )
+    _patch_model_with_fixed_output(refiner, delta_net)
+    delta_H = refiner.predict_delta_H(ref, tgt)
+    assert delta_H is not None, "gate should accept a correct refinement"
+
+
+def test_gate_rejects_when_refiner_makes_alignment_worse(tiny_checkpoint: Path):
+    """Gate ON: a model predicting the WRONG direction (target shifted
+    by (+4, +2) but model predicts (-4, -2)) should produce a negative
+    NCC gain → gate rejects → returns None."""
+    refiner = RefinerInference(
+        checkpoint_path=str(tiny_checkpoint), device="cpu",
+        max_corner_offset_px=100.0, use_gate=True,
+    )
+    H_can, W_can = 96, 192
+    ref, tgt, _ = _make_textured_pair_with_known_shift(
+        H_can, W_can, dx=4.0, dy=2.0, seed=1,
+    )
+    # Predict the OPPOSITE delta — applying it would make alignment worse.
+    H_net, W_net = 64, 128
+    scale = np.array([W_can / W_net, H_can / H_net], dtype=np.float64)
+    wrong_canonical = np.array(
+        [[-4.0, -2.0]] * 4, dtype=np.float32,
+    )
+    wrong_net = (wrong_canonical / scale).astype(np.float32)
+    _patch_model_with_fixed_output(refiner, wrong_net)
+    delta_H = refiner.predict_delta_H(ref, tgt)
+    assert delta_H is None, "gate should reject a refinement that makes it worse"
+
+
+def test_gate_off_passes_through_wrong_direction(tiny_checkpoint: Path):
+    """Gate OFF: even a wrong-direction prediction passes through."""
+    refiner = RefinerInference(
+        checkpoint_path=str(tiny_checkpoint), device="cpu",
+        max_corner_offset_px=100.0, use_gate=False,
+    )
+    H_can, W_can = 96, 192
+    ref, tgt, _ = _make_textured_pair_with_known_shift(
+        H_can, W_can, dx=4.0, dy=2.0, seed=2,
+    )
+    H_net, W_net = 64, 128
+    scale = np.array([W_can / W_net, H_can / H_net], dtype=np.float64)
+    wrong_canonical = np.array([[-4.0, -2.0]] * 4, dtype=np.float32)
+    wrong_net = (wrong_canonical / scale).astype(np.float32)
+    _patch_model_with_fixed_output(refiner, wrong_net)
+    delta_H = refiner.predict_delta_H(ref, tgt)
+    assert delta_H is not None, (
+        "with gate off, wrong-direction predictions must still pass through"
+    )
+
+
+def test_gate_respects_score_margin(tiny_checkpoint: Path):
+    """A high margin rejects even small but positive improvements."""
+    H_can, W_can = 96, 192
+    ref, tgt, delta_net = _make_textured_pair_with_known_shift(
+        H_can, W_can, dx=4.0, dy=2.0, seed=3,
+    )
+
+    # First, gate with margin=0 should accept the correct prediction.
+    refiner_lo = RefinerInference(
+        checkpoint_path=str(tiny_checkpoint), device="cpu",
+        max_corner_offset_px=100.0, use_gate=True, score_margin=0.0,
+    )
+    _patch_model_with_fixed_output(refiner_lo, delta_net)
+    assert refiner_lo.predict_delta_H(ref, tgt) is not None
+
+    # With an unreachably large margin (> 1.0 because NCC is in [-1, 1]),
+    # any improvement is rejected.
+    refiner_hi = RefinerInference(
+        checkpoint_path=str(tiny_checkpoint), device="cpu",
+        max_corner_offset_px=100.0, use_gate=True, score_margin=2.0,
+    )
+    _patch_model_with_fixed_output(refiner_hi, delta_net)
+    assert refiner_hi.predict_delta_H(ref, tgt) is None
+
+
+def test_gate_failure_fails_open(tiny_checkpoint: Path):
+    """If the gate's NCC computation raises, the refiner falls open
+    (returns ΔH without gating) rather than dropping the prediction."""
+    refiner = RefinerInference(
+        checkpoint_path=str(tiny_checkpoint), device="cpu",
+        max_corner_offset_px=100.0, use_gate=True,
+    )
+    H_can, W_can = 96, 192
+    ref, tgt, delta_net = _make_textured_pair_with_known_shift(
+        H_can, W_can, dx=2.0, dy=1.0, seed=4,
+    )
+    _patch_model_with_fixed_output(refiner, delta_net)
+
+    # Sabotage the NCC helper so it always raises.
+    def _broken(*args, **kwargs):
+        raise RuntimeError("simulated NCC crash")
+
+    refiner._masked_ncc_luminance = _broken  # type: ignore[method-assign]
+    delta_H = refiner.predict_delta_H(ref, tgt)
+    assert delta_H is not None, (
+        "gate failure must fall open and return ΔH, not drop the prediction"
+    )
+
+
+def test_gate_center_weight_cached(tiny_checkpoint: Path):
+    """The center-weight mask is cached per (H, W) — repeated lookups
+    return the same array object so we don't recompute per detection."""
+    refiner = RefinerInference(checkpoint_path=str(tiny_checkpoint), device="cpu")
+    a = refiner._get_center_weight(60, 120)
+    b = refiner._get_center_weight(60, 120)
+    assert a is b
+    # Different shape -> different cached entry.
+    c = refiner._get_center_weight(80, 160)
+    assert c is not a
+
+
+def test_masked_ncc_perfect_match_is_one(tiny_checkpoint: Path):
+    """Sanity check the NCC helper: identical input → score ≈ 1."""
+    refiner = RefinerInference(checkpoint_path=str(tiny_checkpoint), device="cpu")
+    rng = np.random.default_rng(7)
+    img = rng.integers(0, 256, (60, 120, 3), dtype=np.uint8)
+    weight = refiner._get_center_weight(60, 120)
+    score = refiner._masked_ncc_luminance(img, img, weight)
+    assert score > 0.999
+
+
+def test_masked_ncc_anti_correlated_is_negative(tiny_checkpoint: Path):
+    """NCC of an image vs its luminance inversion should be negative."""
+    refiner = RefinerInference(checkpoint_path=str(tiny_checkpoint), device="cpu")
+    rng = np.random.default_rng(8)
+    img = rng.integers(0, 256, (60, 120, 3), dtype=np.uint8)
+    inverted = (255 - img).astype(np.uint8)
+    weight = refiner._get_center_weight(60, 120)
+    score = refiner._masked_ncc_luminance(img, inverted, weight)
+    assert score < -0.9

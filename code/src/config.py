@@ -135,6 +135,17 @@ class RevertConfig:
     # to INFO so we notice without spamming the logs on clean runs.
     refiner_rejection_warn_threshold: float = 0.1
 
+    # Do-no-harm gate (Tier 1 of refiner improvements). After the model
+    # produces a sane ΔH, score the alignment under identity vs ΔH using
+    # masked NCC on luminance. Only apply ΔH if it strictly improves the
+    # score by `refiner_score_margin`. Catches the failure mode where the
+    # network over-corrects on already-aligned pairs and adds visible
+    # jitter. Set use_refiner_gate=False to disable the gate entirely
+    # (legacy behavior — the model's own ΔH is always applied if it
+    # passes the sanity checks).
+    use_refiner_gate: bool = True
+    refiner_score_margin: float = 0.01
+
 
 @dataclass
 class TextEditorConfig:

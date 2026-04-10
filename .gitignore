@@ -36,6 +36,7 @@ _refs/
 checkpoints/bpn/
 code/checkpoints/
 code/eval_output/
+saved_videos/
 
 # Claude Code (track commands/agents/skills, ignore local files)
 .claude/local.md

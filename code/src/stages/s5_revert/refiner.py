@@ -52,6 +52,8 @@ class RefinerInference:
         device: str = "cuda",
         image_size: tuple[int, int] = (64, 128),
         max_corner_offset_px: float = 16.0,
+        use_gate: bool = True,
+        score_margin: float = 0.01,
     ):
         """
         Args:
@@ -69,16 +71,33 @@ class RefinerInference:
                 larger than this (in canonical pixels) are rejected.
                 Catches clearly-insane predictions from the very rare
                 degenerate input.
+            use_gate: When True (default), enable the do-no-harm gate:
+                after sanity checks pass, score the alignment under
+                identity vs ΔH using masked NCC on luminance, and
+                only return ΔH if it strictly improves the score by
+                ``score_margin``. Catches "good cases get worse" failure
+                mode where the network over-corrects on already-aligned
+                pairs.
+            score_margin: Minimum NCC improvement required to apply ΔH
+                when the gate is enabled. Default 0.01 (matches the
+                production config default in RevertConfig). Set to 0.0
+                for a more permissive "any improvement is good enough"
+                gate, or raise further to be more conservative.
         """
         self.checkpoint_path = checkpoint_path
         self.device_str = device
         self.image_size = image_size  # (H, W), network input
         self.max_corner_offset_px = float(max_corner_offset_px)
+        self.use_gate = bool(use_gate)
+        self.score_margin = float(score_margin)
 
         # Lazy — not loaded until first predict_delta_H call.
         self._model: Any = None
         self._device: Any = None
         self._src_corners_net: np.ndarray | None = None
+        # Cached center-weight masks keyed by (H, W) — same canonical size
+        # repeats across many detections of one track, so caching is cheap.
+        self._center_weight_cache: dict[tuple[int, int], np.ndarray] = {}
 
     # ------------------------------------------------------------------
     # Lazy load
@@ -254,4 +273,108 @@ class RefinerInference:
             logger.debug("S5 refiner: reject — cond(ΔH) = %.2e", cond)
             return None
 
+        # ----- Do-no-harm gate (Tier 1 improvement) -----
+        # Score the alignment under identity vs. ΔH using masked NCC on
+        # luminance, weighted by a fixed center-feather mask. Only apply
+        # ΔH if it strictly improves the score by `score_margin`.
+        # Catches the failure mode where the network over-corrects on
+        # already-aligned pairs and adds visible jitter.
+        #
+        # Wrapped in try/except so a numerical hiccup leaves the rest of
+        # the path intact — gate failure means "fall back to applying
+        # ΔH without gating", not "drop the prediction".
+        if self.use_gate:
+            try:
+                weight = self._get_center_weight(H_can, W_can)
+                refined_ref = cv2.warpPerspective(
+                    ref_canonical, delta_H, (W_can, H_can),
+                    flags=cv2.INTER_LINEAR,
+                    borderMode=cv2.BORDER_CONSTANT,
+                    borderValue=(0, 0, 0),
+                )
+                score_identity = self._masked_ncc_luminance(
+                    ref_canonical, target_canonical, weight,
+                )
+                score_refined = self._masked_ncc_luminance(
+                    refined_ref, target_canonical, weight,
+                )
+                gain = score_refined - score_identity
+                if gain < self.score_margin:
+                    logger.debug(
+                        "S5 refiner: gate rejected ΔH (refined NCC %.5f - "
+                        "identity NCC %.5f = %.5f < margin %.5f)",
+                        score_refined, score_identity, gain, self.score_margin,
+                    )
+                    return None
+                else:
+                    logger.debug(
+                        "S5 refiner: gate accepted ΔH (gain %+.5f, "
+                        "refined %.5f vs identity %.5f)",
+                        gain, score_refined, score_identity,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "S5 refiner: gate computation raised %s; failing open",
+                    exc,
+                )
+
         return delta_H
+
+    # ------------------------------------------------------------------
+    # Do-no-harm gate helpers
+    # ------------------------------------------------------------------
+
+    def _get_center_weight(self, h: int, w: int) -> np.ndarray:
+        """Cached soft rectangular feather mask, ``(H, W)`` float32.
+
+        1.0 in the interior, fading linearly to 0.1 over the outer 10%
+        of each axis. Mirrors ``losses.center_weight_map`` so the gate's
+        scoring weight matches the training-time weighting.
+        """
+        key = (int(h), int(w))
+        cached = self._center_weight_cache.get(key)
+        if cached is not None:
+            return cached
+        border_frac = 0.1
+        edge_value = 0.1
+        y = np.arange(h, dtype=np.float32)
+        x = np.arange(w, dtype=np.float32)
+        d_y = np.minimum(y, (h - 1) - y)
+        d_x = np.minimum(x, (w - 1) - x)
+        band_y = max(1, int(h * border_frac))
+        band_x = max(1, int(w * border_frac))
+        w_y = np.clip(d_y / band_y, 0.0, 1.0) * (1.0 - edge_value) + edge_value
+        w_x = np.clip(d_x / band_x, 0.0, 1.0) * (1.0 - edge_value) + edge_value
+        mask = (w_y[:, None] * w_x[None, :]).astype(np.float32)
+        self._center_weight_cache[key] = mask
+        return mask
+
+    @staticmethod
+    def _masked_ncc_luminance(
+        a: np.ndarray, b: np.ndarray, weight: np.ndarray,
+    ) -> float:
+        """Masked normalized cross-correlation of two BGR uint8 images
+        on the BT.601 luminance channel.
+
+        Returns a scalar in ``[-1, 1]``, higher is better aligned.
+        Uses float64 internally so the gate isn't sensitive to
+        accumulated float32 noise on small ROIs.
+        """
+        if a.shape != b.shape:
+            raise ValueError(f"shape mismatch: {a.shape} vs {b.shape}")
+        # BGR -> luminance via BT.601 weights, matching losses.luminance.
+        # cv2.cvtColor uses the same coefficients for COLOR_BGR2GRAY.
+        a_lum = cv2.cvtColor(a, cv2.COLOR_BGR2GRAY).astype(np.float64) / 255.0
+        b_lum = cv2.cvtColor(b, cv2.COLOR_BGR2GRAY).astype(np.float64) / 255.0
+        w = weight.astype(np.float64)
+        w_sum = float(w.sum()) + 1e-12
+        a_mean = float((w * a_lum).sum()) / w_sum
+        b_mean = float((w * b_lum).sum()) / w_sum
+        a_c = a_lum - a_mean
+        b_c = b_lum - b_mean
+        cov = float((w * a_c * b_c).sum()) / w_sum
+        var_a = float((w * a_c * a_c).sum()) / w_sum
+        var_b = float((w * b_c * b_c).sum()) / w_sum
+        denom = float(np.sqrt(var_a * var_b)) + 1e-12
+        ncc = cov / denom
+        return float(np.clip(ncc, -1.0, 1.0))
