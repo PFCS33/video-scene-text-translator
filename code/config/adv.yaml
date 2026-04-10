@@ -46,6 +46,7 @@ detection:
   use_flow_ocr_blend: false
   use_kalman_smoothing: false
   use_ema_smoothing: false
+  cotracker_grid_size: 7
 
 translation:
   source_lang: "en"
@@ -100,7 +101,7 @@ revert:
   refiner_rejection_warn_threshold: 0.1
   temporal_smooth_window: 7
   temporal_smooth_sigma: 10
-  pre_inpaint: true
+  pre_inpaint: false
   pre_inpaint_expansion: 0.15   # 15% expansion from centroid
 
 text_editor:
@@ -108,8 +109,8 @@ text_editor:
   model_path: null
   device: "cpu"
   # AnyText2 Gradio server (set to your server's URL, e.g. http://localhost:45843/)
-  #server_url: "http://109.231.106.68:45843/"
-  server_url: "http://localhost:6006/"
+  server_url: "http://109.231.106.68:45843/"
+  #server_url: "http://localhost:6006/"
   server_timeout: 120
   anytext2_ddim_steps: 20
   anytext2_cfg_scale: 7.5
