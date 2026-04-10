@@ -12,6 +12,7 @@ Requires:
 from __future__ import annotations
 
 import logging
+import os
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -254,6 +255,18 @@ class AnyText2Editor(BaseTextEditor):
                         f"Failed to write mimic mask to {mimic_mask_path}"
                     )
 
+            # Debug: save copies of server inputs for inspection
+            _dbg = os.environ.get("ANYTEXT2_DEBUG_DIR")
+            if _dbg:
+                import shutil
+                os.makedirs(_dbg, exist_ok=True)
+                safe = target_text.replace("/", "_")[:20]
+                shutil.copy(ori_path, f"{_dbg}/ref_img_{safe}.png")
+                shutil.copy(mask_path, f"{_dbg}/ref_mask_{safe}.png")
+                if mimic_ori_path:
+                    shutil.copy(mimic_ori_path, f"{_dbg}/m1_img_{safe}.png")
+                    shutil.copy(mimic_mask_path, f"{_dbg}/m1_mask_{safe}.png")
+
             result_image = self._call_server(
                 ori_path, mask_path, target_text, text_color, w_send, h_send,
                 mimic_ori_path=mimic_ori_path,
@@ -264,7 +277,7 @@ class AnyText2Editor(BaseTextEditor):
         result_content = result_image[ct:cb, cl:cr]
 
         if crop_box is not None:
-            # Resize sub-canvas result to crop dimensions, paste into full ROI
+            # Resize sub-canvas result to crop dimensions
             crop_h, crop_w = cbb - cbt, cbr - cbl
             if result_content.shape[:2] != (crop_h, crop_w):
                 result_content = cv2.resize(
@@ -358,6 +371,14 @@ class AnyText2Editor(BaseTextEditor):
                 exc,
             )
             return roi_image, edit_region
+
+        # Smooth SRNet inpaint artifacts (colored noise at text edges)
+        # before compositing.  A light bilateral filter preserves the
+        # background texture while removing the speckled color noise
+        # that would otherwise pollute AnyText2's style extraction.
+        clean_canonical = cv2.bilateralFilter(
+            clean_canonical, d=9, sigmaColor=75, sigmaSpace=75,
+        )
 
         # Restore the middle strip (original pixels under the new mask)
         hybrid_canonical = restore_middle_strip(
