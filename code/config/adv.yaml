@@ -40,6 +40,11 @@ detection:
   farneback_poly_sigma: 1.2
   lk_win_size: [21, 21]
   lk_max_level: 3
+  # S1 quad smoothing: Kalman + EMA on gap-filled quads. Off by default
+  # because S5 temporal smoothing handles stability at the output stage.
+  # Enable only if S5 smoothing is disabled and you need S1-level filtering.
+  use_kalman_smoothing: false
+  use_ema_smoothing: false
 
 translation:
   source_lang: "en"

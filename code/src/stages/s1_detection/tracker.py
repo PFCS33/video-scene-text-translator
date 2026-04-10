@@ -12,14 +12,14 @@ import numpy as np
 
 from src.config import DetectionConfig
 from src.data_types import BBox, Quad, TextDetection, TextTrack
+
+# Kalman
+from src.utils.kalman import QuadKalmanFilter
 from src.utils.optical_flow import (
     CoTrackerFlowTracker,
     track_points_farneback,
     track_points_lucas_kanade,
 )
-
-# Kalman
-from src.utils.kalman import QuadKalmanFilter
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +45,8 @@ class TextTracker:
         # EMA state per track
         self._ema_states: dict[int, np.ndarray] = {}
 
-        # EMA smoothing factor (tunable)
-        self._ema_alpha = 0.6
+        # EMA smoothing factor (tunable via config)
+        self._ema_alpha = getattr(config, "ema_alpha", 0.6)
 
     # -------------------------
     # Kalman helpers
@@ -276,13 +276,15 @@ class TextTracker:
                 if existing is not None:
                     quad = self._smooth_quad(existing.quad, quad, alpha=0.3)
 
-                # Kalman
-                kalman = self._get_kalman(track.track_id)
                 quad_points = self._to_np(quad.points)
-                filtered_points = kalman.update(quad_points)
+                filtered_points = quad_points
 
-                # EMA (final smoothing)
-                filtered_points = self._apply_ema(track.track_id, filtered_points)
+                if self.config.use_kalman_smoothing:
+                    kalman = self._get_kalman(track.track_id)
+                    filtered_points = kalman.update(filtered_points)
+
+                if self.config.use_ema_smoothing:
+                    filtered_points = self._apply_ema(track.track_id, filtered_points)
 
                 quad = Quad(points=filtered_points)
 

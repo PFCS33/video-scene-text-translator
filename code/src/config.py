@@ -52,6 +52,13 @@ class DetectionConfig:
     lk_max_level: int = 3
     # Optional word whitelist — if set, only keep detections whose words are all in this set
     word_whitelist: set[str] | None = None
+    # S1 quad smoothing filters applied during gap-filling. These operate
+    # on the raw optical-flow quads before S2 frontalization. Stacking
+    # multiple filters introduces positional lag — disable if S5 temporal
+    # smoothing is used instead.
+    use_kalman_smoothing: bool = False
+    use_ema_smoothing: bool = False
+    ema_alpha: float = 0.6  # EMA weight on previous state (higher = more lag)
 
 
 @dataclass
