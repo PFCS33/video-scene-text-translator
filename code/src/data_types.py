@@ -190,6 +190,12 @@ class PropagatedROI:
     roi_image: np.ndarray  # Color-adjusted translated ROI (H x W x 3)
     alpha_mask: np.ndarray  # Alpha mask for blending (H x W, float 0-1)
     target_quad: Quad  # Where to place it in the original frame
+    # Optional canonical-frontal frame ROI for this detection, used by the
+    # S5 alignment refiner. Populated by S4 when
+    # `propagation.save_target_canonical_roi` is set. Same spatial size as
+    # the track's canonical rectangle. None when the refiner is disabled so
+    # non-refiner runs incur no extra memory cost.
+    target_roi_canonical: np.ndarray | None = None
 
 
 @dataclass

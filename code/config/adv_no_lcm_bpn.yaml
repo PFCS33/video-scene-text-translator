@@ -1,5 +1,7 @@
-# Default pipeline configuration
-# Override per-run via CLI flags or a custom YAML file
+# Ablation config: adv.yaml with S4 LCM + BPN disabled.
+# S5 alignment refiner still ON. Used to isolate the refiner's
+# contribution from LCM/BPN side effects. See
+# saved_videos/refiner_ablation/no_lcm_bpn/ for comparison outputs.
 
 input_video: ""
 output_video: ""

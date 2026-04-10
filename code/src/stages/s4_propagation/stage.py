@@ -256,7 +256,8 @@ class PropagationStage:
                     logger.warning("S4: BPN inference failed (%s); skipping", e)
 
             # ----- Emit PropagatedROIs -----
-            for frame_idx, det, _, adapted_roi in per_det_outputs:
+            save_canonical = self.config.save_target_canonical_roi
+            for frame_idx, det, target_canonical, adapted_roi in per_det_outputs:
                 alpha = self._create_alpha_mask(adapted_roi.shape[:2])
                 prop_roi = PropagatedROI(
                     frame_idx=frame_idx,
@@ -264,6 +265,9 @@ class PropagationStage:
                     roi_image=adapted_roi,
                     alpha_mask=alpha,
                     target_quad=det.quad,
+                    target_roi_canonical=(
+                        target_canonical.copy() if save_canonical else None
+                    ),
                 )
                 propagated.setdefault(frame_idx, []).append(prop_roi)
 

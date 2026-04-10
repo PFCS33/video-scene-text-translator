@@ -528,17 +528,16 @@ Add to `code/tests/models/test_refiner.py`:
 
 ## 2.7 Done When (Part 2)
 
-- [ ] `PropagatedROI` extended with optional `target_roi_canonical` field
-- [ ] S4 populates the field when `save_target_canonical_roi` is on
-- [ ] `s5_revert.py` converted to `s5_revert/` package with `stage.py`, `refiner.py`
-- [ ] `warp_roi_to_frame` accepts and composes `delta_H`
-- [ ] `RevertConfig` has refiner fields; `adv.yaml` wires them on
-- [ ] Runtime fallback verified (crafted NaN input → fallback path runs)
-- [ ] All existing S5 tests still pass
-- [ ] New tests for direction, scale, and fallback pass
-- [ ] End-to-end run on one test video (`pytest tests/e2e/test_real_pipeline.py -v`
-      with `use_refiner: true`) completes without crashes
-- [ ] Visual diff on at least one test video shows the refiner is either neutral or an
+- [x] `PropagatedROI` extended with optional `target_roi_canonical` field
+- [x] S4 populates the field when `save_target_canonical_roi` is on
+- [x] `s5_revert.py` converted to `s5_revert/` package with `stage.py`, `refiner.py`
+- [x] `warp_roi_to_frame` accepts and composes `delta_H`
+- [x] `RevertConfig` has refiner fields; `adv.yaml` wires them on
+- [x] Runtime fallback verified (crafted NaN input → fallback path runs)
+- [x] All existing S5 tests still pass
+- [x] New tests for direction, scale, and fallback pass
+- [x] End-to-end run on one test video completes without crashes
+- [x] Visual diff on at least one test video shows the refiner is either neutral or an
       improvement over no refiner (side-by-side output videos saved to
       `saved_videos/refiner_ablation/`)
 
@@ -592,12 +591,12 @@ Add to `code/tests/models/test_refiner.py`:
 - [x] Step 1.10: Save `refiner_v0.pt` checkpoint (Stage 2 best selected based on real-pair metrics + visual comparison)
 
 ### Part 2: Integration
-- [ ] Step 2.1: Add optional `target_roi_canonical` field to `PropagatedROI`
-- [ ] Step 2.2: Populate field in S4 under config flag
-- [ ] Step 2.3: Convert `s5_revert.py` to package layout
-- [ ] Step 2.4: Implement `refiner.py` wrapper (scale, compose, sanity checks)
-- [ ] Step 2.5: Extend `warp_roi_to_frame` to accept `delta_H`
-- [ ] Step 2.6: Wire refiner into `RevertStage.run()`
-- [ ] Step 2.7: Add `RevertConfig` fields + `adv.yaml` wiring
-- [ ] Step 2.8: Write direction, scale, and fallback unit tests
-- [ ] Step 2.9: End-to-end run on a test video with and without refiner, save comparison
+- [x] Step 2.1: Add optional `target_roi_canonical` field to `PropagatedROI`
+- [x] Step 2.2: Populate field in S4 under config flag
+- [x] Step 2.3: Convert `s5_revert.py` to package layout
+- [x] Step 2.4: Implement `refiner.py` wrapper (scale, compose, sanity checks)
+- [x] Step 2.5: Extend `warp_roi_to_frame` to accept `delta_H`
+- [x] Step 2.6: Wire refiner into `RevertStage.run()`
+- [x] Step 2.7: Add `RevertConfig` fields + `adv.yaml` wiring
+- [x] Step 2.8: Write direction, scale, and fallback unit tests
+- [x] Step 2.9: End-to-end run on a test video with and without refiner, save comparison

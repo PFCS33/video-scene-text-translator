@@ -1,5 +1,7 @@
-# Default pipeline configuration
-# Override per-run via CLI flags or a custom YAML file
+# Ablation config: LCM + BPN + S5 refiner all disabled. The cleanest
+# baseline for isolating the S5 alignment refiner's contribution on top
+# of the raw AnyText2 + histogram-matching pipeline. See
+# saved_videos/refiner_ablation/no_lcm_bpn/.
 
 input_video: ""
 output_video: ""
@@ -74,24 +76,15 @@ propagation:
   bpn_n_neighbors: 3
   bpn_image_size: [64, 128]  # (H, W) at training time
   bpn_kernel_size: 41
-  # Attach per-detection canonical-frontal target ROI to each PropagatedROI
-  # so the S5 alignment refiner can consume it. Required when revert.use_refiner
-  # is on; otherwise this is wasted memory.
-  save_target_canonical_roi: true
+  # Baseline ablation: refiner off, so we skip saving the canonical ROIs.
+  save_target_canonical_roi: false
 
 revert:
   blend_border_size: 3
   blend_method: "gaussian"
-  # S5 alignment refiner: predicts a residual homography between
-  # reference and target canonical ROIs, composing it into the warp
-  # chain to correct residual CoTracker tracking error. See
-  # code/src/models/refiner/README.md for the network design.
-  use_refiner: true
-  refiner_checkpoint_path: "checkpoints/refiner/refiner_v0.pt"
-  refiner_device: "cuda"
-  refiner_image_size: [64, 128]  # (H, W) network input — must match training
-  refiner_max_corner_offset_px: 16.0
-  refiner_rejection_warn_threshold: 0.1
+  # Baseline ablation: refiner off. Kept for A/B comparison against
+  # adv.yaml which has the refiner on.
+  use_refiner: false
 
 text_editor:
   backend: "anytext2"

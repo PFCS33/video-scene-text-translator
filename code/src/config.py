@@ -31,7 +31,7 @@ class DetectionConfig:
     # Process every N-th frame for detection (1 = every frame)
     frame_sample_rate: int = 1
     # track_break_threshold: maximum number of frames to allow between detections in the same track
-    track_break_threshold: int = 5
+    track_break_threshold: int = 30
     # Optical flow for tracking quads between frames
     optical_flow_method: str = "farneback"  # "farneback", "lucas_kanade", or "cotracker"
     # "gaps_only": only fill frames missing OCR detections (original behavior)
@@ -106,11 +106,34 @@ class PropagationConfig:
     bpn_image_size: tuple[int, int] = (64, 128)  # (H, W) at training time
     bpn_kernel_size: int = 41
 
+    # Attach each detection's canonical-frontal frame ROI to its PropagatedROI.
+    # Needed by the S5 alignment refiner so it can predict ΔH against the
+    # reference canonical ROI. Adds memory per detection (~track.canonical_size
+    # * 3 bytes per detection), so default off.
+    save_target_canonical_roi: bool = False
+
 
 @dataclass
 class RevertConfig:
     blend_border_size: int = 3
     blend_method: str = "gaussian"
+
+    # S5 alignment refiner. See code/src/models/refiner/README.md for the
+    # network design and code/src/stages/s5_revert/refiner.py for the
+    # inference wrapper. When enabled, predicts a residual homography
+    # (ΔH) between the reference and target canonical ROIs and composes
+    # it into the warp chain to correct residual CoTracker tracking
+    # error. Requires propagation.save_target_canonical_roi=True so S4
+    # populates PropagatedROI.target_roi_canonical.
+    use_refiner: bool = False
+    refiner_checkpoint_path: str = "checkpoints/refiner/refiner_v0.pt"
+    refiner_device: str = "cuda"
+    refiner_image_size: tuple[int, int] = (64, 128)  # (H, W) at network input
+    refiner_max_corner_offset_px: float = 16.0
+    # If more than this fraction of refiner predictions per video are
+    # rejected by the sanity checks, escalate the log line from DEBUG
+    # to INFO so we notice without spamming the logs on clean runs.
+    refiner_rejection_warn_threshold: float = 0.1
 
 
 @dataclass
@@ -216,4 +239,24 @@ class PipelineConfig:
             errors.append(
                 "text_editor.server_url is required when backend is 'anytext2'"
             )
+        if self.revert.use_refiner:
+            if not self.revert.refiner_checkpoint_path:
+                errors.append(
+                    "revert.refiner_checkpoint_path is required when "
+                    "revert.use_refiner is True"
+                )
+            if not self.propagation.save_target_canonical_roi:
+                errors.append(
+                    "propagation.save_target_canonical_roi must be True "
+                    "when revert.use_refiner is True (the refiner needs "
+                    "S4 to attach target_roi_canonical to each PropagatedROI)"
+                )
+            if not (0.0 <= self.revert.refiner_rejection_warn_threshold <= 1.0):
+                errors.append(
+                    "revert.refiner_rejection_warn_threshold must be in [0, 1]"
+                )
+            if self.revert.refiner_max_corner_offset_px <= 0:
+                errors.append(
+                    "revert.refiner_max_corner_offset_px must be > 0"
+                )
         return errors

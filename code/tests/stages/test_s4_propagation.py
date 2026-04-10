@@ -74,6 +74,69 @@ class TestPropagationRun:
         assert len(result[0]) == 1
         assert result[0][0].roi_image.shape[:2] == edited_roi.shape[:2]
 
+    def test_target_canonical_roi_default_off(self, propagation_stage, synthetic_frame):
+        """By default, PropagatedROI.target_roi_canonical should be None."""
+        quad = Quad(points=np.array([
+            [200, 150], [440, 150], [440, 250], [200, 250]
+        ], dtype=np.float32))
+        det = TextDetection(
+            frame_idx=0, quad=quad, bbox=quad.to_bbox(),
+            text="HELLO", ocr_confidence=0.9,
+        )
+        edited_roi = np.full((100, 240, 3), 128, dtype=np.uint8)
+        track = TextTrack(
+            track_id=0, source_text="HELLO", target_text="HOLA",
+            source_lang="en", target_lang="es",
+            detections={0: det},
+            reference_frame_idx=0,
+            edited_roi=edited_roi,
+        )
+        result = propagation_stage.run([track], {0: synthetic_frame})
+        assert result[0][0].target_roi_canonical is None
+
+    def test_target_canonical_roi_populated_when_flag_on(
+        self, default_config, synthetic_frame,
+    ):
+        """When save_target_canonical_roi=True, S4 must populate the field
+        with the same canonical ROI it fed to LCM/histogram matching."""
+        default_config.propagation.save_target_canonical_roi = True
+        stage = PropagationStage(default_config)
+
+        quad = Quad(points=np.array([
+            [50, 50], [250, 50], [250, 150], [50, 150]
+        ], dtype=np.float32))
+        H = np.eye(3, dtype=np.float64)
+        det = TextDetection(
+            frame_idx=0, quad=quad, bbox=quad.to_bbox(),
+            text="HELLO", ocr_confidence=0.9,
+            H_to_frontal=H, H_from_frontal=H, homography_valid=True,
+        )
+        edited_roi = np.full((80, 180, 3), 150, dtype=np.uint8)
+        track = TextTrack(
+            track_id=0, source_text="HELLO", target_text="HOLA",
+            source_lang="en", target_lang="es",
+            detections={0: det},
+            reference_frame_idx=0,
+            canonical_size=(180, 80),
+            edited_roi=edited_roi,
+        )
+        # Frame needs to be at least 180x80 for H=identity warp to not go out
+        # of bounds and yield an all-zero canonical.
+        frame = np.random.randint(0, 255, (200, 300, 3), dtype=np.uint8)
+        result = stage.run([track], {0: frame})
+
+        prop = result[0][0]
+        assert prop.target_roi_canonical is not None
+        # canonical_size is (W, H) in the track but the warp output from
+        # cv2.warpPerspective with dsize=(w, h) returns (h, w, 3).
+        assert prop.target_roi_canonical.shape == (80, 180, 3)
+        assert prop.target_roi_canonical.dtype == np.uint8
+        # It should be a copy, not a view onto the frame.
+        prop.target_roi_canonical[:] = 0
+        assert result[0][0].target_roi_canonical[0, 0, 0] == 0  # our write hit
+        # And the source frame should be untouched.
+        assert frame[0, 0, 0] != 0 or frame.mean() > 0  # original noise intact
+
     def test_skips_track_without_edited_roi(self, propagation_stage):
         track = TextTrack(
             track_id=0, source_text="A", target_text="B",
