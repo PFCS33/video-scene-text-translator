@@ -302,6 +302,15 @@ class TextTracker:
 
         accepted: list[TextTrack] = []
         for track in sorted_tracks:
+            # Drop tracks where translation == source (nothing to replace).
+            if track.source_text.strip().lower() == track.target_text.strip().lower():
+                logger.info(
+                    "S1: dropping track %d — target text '%s' is same as "
+                    "source '%s'",
+                    track.track_id, track.target_text, track.source_text,
+                )
+                continue
+
             start_frame = min(track.detections.keys())
             start_det = track.detections[start_frame]
 
