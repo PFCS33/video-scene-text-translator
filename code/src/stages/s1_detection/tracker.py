@@ -32,17 +32,29 @@ def bbox_iou(a: BBox, b: BBox) -> float:
     return intersection / max(union, 1e-6)
 
 
-def bbox_coverage(candidate: BBox, existing: BBox) -> float:
-    """Fraction of ``candidate``'s area covered by ``existing``.
+def quad_coverage(candidate: Quad, existing: Quad) -> float:
+    """Fraction of ``candidate``'s quad area covered by ``existing``'s quad.
 
-    Returns ``intersection(candidate, existing) / area(candidate)``.
-    This catches sub-region duplicates that IoU would miss: if "AB" is
-    fully inside "ABCD", IoU is low (~0.3) but coverage is ~1.0.
+    Uses Shapely polygon intersection for accurate overlap on rotated /
+    perspective-distorted quads. Axis-aligned bbox overlap would grossly
+    overestimate coverage for tilted text.
+
+    Returns ``intersection_area(candidate, existing) / area(candidate)``
+    in [0, 1].  Returns 0 if either polygon is degenerate.
     """
-    x_overlap = max(0, min(candidate.x2, existing.x2) - max(candidate.x, existing.x))
-    y_overlap = max(0, min(candidate.y2, existing.y2) - max(candidate.y, existing.y))
-    intersection = x_overlap * y_overlap
-    return intersection / max(candidate.area(), 1)
+    from shapely.geometry import Polygon
+
+    try:
+        poly_c = Polygon(candidate.points)
+        poly_e = Polygon(existing.points)
+        if not poly_c.is_valid or not poly_e.is_valid:
+            return 0.0
+        c_area = poly_c.area
+        if c_area < 1e-6:
+            return 0.0
+        return float(poly_c.intersection(poly_e).area / c_area)
+    except Exception:  # noqa: BLE001
+        return 0.0
 
 
 class TextTracker:
@@ -292,14 +304,13 @@ class TextTracker:
         for track in sorted_tracks:
             start_frame = min(track.detections.keys())
             start_det = track.detections[start_frame]
-            start_bbox = start_det.bbox
 
             is_duplicate = False
             for existing in accepted:
                 existing_det = existing.detections.get(start_frame)
                 if existing_det is None:
                     continue
-                coverage = bbox_coverage(start_bbox, existing_det.bbox)
+                coverage = quad_coverage(start_det.quad, existing_det.quad)
                 if coverage >= threshold:
                     logger.info(
                         "S1: dropping track %d ('%s', starts frame %d) — "
