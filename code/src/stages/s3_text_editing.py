@@ -140,6 +140,30 @@ class TextEditingStage:
                 device=prop.inpainter_device,
             )
             return self._s3_inpainter
+        if backend == "hisam":
+            if not prop.inpainter_checkpoint_path:
+                logger.warning(
+                    "S3: anytext2 adaptive mask requested hisam inpainter "
+                    "but propagation.inpainter_checkpoint_path is empty; "
+                    "falling back to non-adaptive mask."
+                )
+                return None
+            from src.stages.s4_propagation.segmentation_inpainter import (
+                SegmentationBasedInpainter,
+            )
+            logger.info(
+                "S3: loading Hi-SAM inpainter for AnyText2 adaptive mask "
+                "from %s", prop.inpainter_checkpoint_path,
+            )
+            self._s3_inpainter = SegmentationBasedInpainter(
+                checkpoint_path=prop.inpainter_checkpoint_path,
+                device=prop.inpainter_device,
+                model_type=prop.hisam_model_type,
+                mask_dilation_px=prop.hisam_mask_dilation_px,
+                inpaint_method=prop.hisam_inpaint_method,
+                use_patch_mode=prop.hisam_use_patch_mode,
+            )
+            return self._s3_inpainter
         logger.warning(
             "S3: unknown inpainter_backend %r; AnyText2 adaptive mask "
             "will fall back to non-adaptive.", backend,
