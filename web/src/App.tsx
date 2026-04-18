@@ -978,17 +978,10 @@ function ActiveRightColumn({
           </>
         )}
         {streamState.status === "failed" && streamState.error && (
-          <>
-            <LogPanel
-              logs={streamState.logs}
-              currentStage={streamState.currentStage}
-              isRunning={false}
-            />
-            <FailureCard
-              message={streamState.error.message}
-              traceback={streamState.error.traceback ?? null}
-            />
-          </>
+          <FailureCard
+            message={streamState.error.message}
+            traceback={streamState.error.traceback ?? null}
+          />
         )}
         {/*
          * Inline delete-error alert. Rendered below whatever terminal
