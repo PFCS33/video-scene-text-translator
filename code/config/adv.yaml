@@ -146,8 +146,8 @@ text_editor:
   model_path: null
   device: "cpu"
   # AnyText2 Gradio server (set to your server's URL, e.g. http://localhost:45843/)
-  #server_url: "http://109.231.106.68:45843/"
-  server_url: "http://localhost:6006/"
+  server_url: "http://109.231.106.68:45843/"
+  #server_url: "http://localhost:6006/"
   server_timeout: 120
   anytext2_ddim_steps: 20
   anytext2_cfg_scale: 7.5
