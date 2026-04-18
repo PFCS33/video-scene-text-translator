@@ -49,14 +49,14 @@ export function RejoinCard({
   const startedLabel =
     formatStartedAt(blockingStatus?.created_at) ?? "\u2014";
 
-  // Match mockup: truncate the id to 8 chars for the metadata cell. Full id
-  // is still addressable via the `onRejoin` callback payload on the parent.
-  const shortId = blockingJobId.slice(0, 8);
+  // Full id in the metadata cell so the user can copy it for debugging or
+  // link against it in another tab. The StatusBand chrome still shows the
+  // 8-char prefix as a compact indicator.
 
   return (
     <section
       aria-labelledby={headingId}
-      className="mx-auto w-full max-w-[560px] overflow-hidden rounded-md border border-[color:var(--warn-line)] bg-card"
+      className="w-full overflow-hidden rounded-md border border-[color:var(--warn-line)] bg-card"
     >
       {/* Decorative label strip. `aria-hidden` because its content is
           entirely duplicated by the heading + description below. */}
@@ -65,7 +65,7 @@ export function RejoinCard({
         className="border-b border-[color:var(--warn-line)] bg-[color:var(--warn-soft)] px-3 py-1.5 font-mono text-[11px] font-semibold uppercase tracking-wider text-[color:var(--warn)]"
       >
         <span className="mr-1.5">&#x25CF;</span>
-        SERVER BUSY
+        Another job is running
       </div>
 
       <div className="px-6 py-5">
@@ -84,9 +84,8 @@ export function RejoinCard({
           <dt className="text-[11px] uppercase tracking-wider text-muted-foreground">
             Running job
           </dt>
-          <dd className="font-mono text-sm text-foreground">
-            {shortId}
-            {blockingJobId.length > 8 ? "\u2026" : ""}
+          <dd className="break-all font-mono text-sm text-foreground">
+            {blockingJobId}
           </dd>
 
           <dt className="text-[11px] uppercase tracking-wider text-muted-foreground">
@@ -110,7 +109,7 @@ export function RejoinCard({
         </Button>
 
         <p className="mt-3 text-center font-mono text-[11px] text-[color:var(--ink-3)]">
-          Your file stays queued in this browser tab.
+          or wait for the server to free up {"\u00B7"} your file stays queued
         </p>
       </div>
     </section>

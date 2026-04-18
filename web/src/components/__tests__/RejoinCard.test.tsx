@@ -60,7 +60,7 @@ describe("<RejoinCard>", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders truncated job-id prefix and — placeholders when blockingStatus is null", () => {
+  it("renders the full job id and — placeholders when blockingStatus is null", () => {
     render(
       <RejoinCard
         blockingJobId="abcdef1234567890"
@@ -69,9 +69,8 @@ describe("<RejoinCard>", () => {
       />,
     );
 
-    // First 8 chars of the id visible (trailing ellipsis or sibling glyph is
-    // fine — we only pin the prefix).
-    expect(screen.getByText(/abcdef12/)).toBeInTheDocument();
+    // Full 16-char id renders (no truncation).
+    expect(screen.getByText("abcdef1234567890")).toBeInTheDocument();
 
     // Stage + Started rows fall back to "—" when status is null. Two rows,
     // so two em dashes.
