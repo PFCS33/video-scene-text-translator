@@ -32,6 +32,7 @@ import {
   vi,
 } from "vitest";
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -39,12 +40,28 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import type { JobStatus, Language } from "@/api/schemas";
+import type { JobStatus, Language, SSEEvent } from "@/api/schemas";
 import type { StreamOptions } from "@/api/sse";
 
 // ---------------------------------------------------------------------------
 // Module mocks (hoisted).
+//
+// Tests that drive the active phase need to push SSE events into the child
+// `useJobStream` hook. The openEventStream mock therefore records the most
+// recent caller-supplied options on a hoisted ref (vitest moves `vi.mock`
+// factories above module imports, so module-scoped mutable state has to go
+// through `vi.hoisted`).
 // ---------------------------------------------------------------------------
+
+const { getLastStreamOptions, setLastStreamOptions } = vi.hoisted(() => {
+  let opts: StreamOptions | null = null;
+  return {
+    getLastStreamOptions: (): StreamOptions | null => opts,
+    setLastStreamOptions: (v: StreamOptions | null): void => {
+      opts = v;
+    },
+  };
+});
 
 vi.mock("@/api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/client")>();
@@ -58,10 +75,13 @@ vi.mock("@/api/client", async (importOriginal) => {
 });
 
 vi.mock("@/api/sse", () => ({
-  openEventStream: vi.fn((_jobId: string, _opts: StreamOptions) => ({
-    close: vi.fn(),
-    readyState: 1,
-  })),
+  openEventStream: vi.fn((_jobId: string, opts: StreamOptions) => {
+    setLastStreamOptions(opts);
+    return {
+      close: vi.fn(),
+      readyState: 1,
+    };
+  }),
 }));
 
 import App from "../../App";
@@ -125,6 +145,7 @@ beforeEach(() => {
   vi.mocked(getLanguages).mockReset();
   vi.mocked(getJobStatus).mockReset();
   vi.mocked(deleteJob).mockReset();
+  setLastStreamOptions(null);
 
   vi.mocked(getLanguages).mockResolvedValue(LANGUAGES);
   // Default: getJobStatus returns a running status — used by the hook's
@@ -387,5 +408,157 @@ describe("<App> state machine", () => {
     // Silence unused-var lint for `user` — keeps the setup symmetric with
     // other tests in case we extend this one.
     void user;
+  });
+
+  // ---------------------------------------------------------------------
+  // Terminal → idle transitions.
+  //
+  // These tests drive the active phase into `succeeded` by pushing a
+  // synthetic `done` event through the captured SSE `onEvent` callback
+  // (see the hoisted `getLastStreamOptions` shim above). From there they
+  // exercise the two reset paths exposed on <SubmitBar kind="terminal">:
+  // "Submit another" (local dispatch({type:"reset"})) and "✗ delete job"
+  // (deleteJob then dispatch reset). A delete that fails must surface
+  // inline instead of bouncing back to idle.
+  // ---------------------------------------------------------------------
+
+  /**
+   * Drive the form into `active` + `succeeded`. Returns the UserEvent
+   * instance so callers can continue interacting. `getLastStreamOptions()`
+   * is populated as a side effect of the hook's SSE subscription.
+   */
+  async function reachSucceededPhase(): Promise<
+    ReturnType<typeof userEvent.setup>
+  > {
+    vi.mocked(createJob).mockResolvedValueOnce({ job_id: "job-done" });
+    // Seed fetch on the active job — we report "running" so the hook
+    // doesn't short-circuit to succeeded before our synthetic `done`.
+    vi.mocked(getJobStatus).mockResolvedValue(
+      baseJobStatus({ job_id: "job-done", status: "running", current_stage: "s5" }),
+    );
+
+    const user = userEvent.setup();
+    render(<App />);
+    await waitFor(() =>
+      expect(vi.mocked(getLanguages)).toHaveBeenCalled(),
+    );
+    await pickFile(user);
+    await user.click(
+      screen.getByRole("button", { name: /start translation/i }),
+    );
+
+    // Wait for the hook to mount and register its SSE callbacks.
+    await waitFor(() => {
+      expect(getLastStreamOptions()).not.toBeNull();
+    });
+
+    // Push a terminal `done` event through the SSE callback.
+    act(() => {
+      getLastStreamOptions()!.onEvent({
+        type: "done",
+        output_url: "/api/jobs/job-done/output",
+        ts: Date.now() / 1000,
+      } satisfies SSEEvent);
+    });
+
+    // The terminal surface should render: SubmitBar switches to
+    // "Submit another" and the READY pill appears.
+    expect(
+      await screen.findByRole("button", { name: /submit another/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/^READY$/)).toBeInTheDocument();
+
+    return user;
+  }
+
+  it("active(succeeded) -> idle via 'Submit another' clears file + langs", async () => {
+    const user = await reachSucceededPhase();
+
+    // Sanity: terminal surface is up and the ResultPanel video is mounted.
+    expect(
+      screen.getByRole("button", { name: /submit another/i }),
+    ).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: /submit another/i }),
+    );
+
+    // Back to idle: Start translation button, IDLE pill, IdlePlaceholder.
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /start translation/i }),
+      ).toBeInTheDocument();
+    });
+    expect(screen.getByText(/^IDLE$/)).toBeInTheDocument();
+    expect(screen.getByText(/WAITING FOR A JOB/i)).toBeInTheDocument();
+
+    // The file is gone — Dropzone's empty-state headline renders again
+    // (VideoCard would have replaced it).
+    expect(screen.getByText(/Drop video here/i)).toBeInTheDocument();
+
+    // Submit is disabled again (no file picked post-reset).
+    expect(
+      screen.getByRole("button", { name: /start translation/i }),
+    ).toBeDisabled();
+  });
+
+  it("active(succeeded) -> idle via '✗ delete job' calls deleteJob", async () => {
+    const user = await reachSucceededPhase();
+    vi.mocked(deleteJob).mockResolvedValueOnce({
+      deleted: "job-done",
+      ts: Date.now() / 1000,
+    });
+
+    await user.click(
+      screen.getByRole("button", { name: /delete job/i }),
+    );
+
+    await waitFor(() => {
+      expect(vi.mocked(deleteJob)).toHaveBeenCalledWith("job-done");
+    });
+
+    // Transitioned back to idle.
+    await waitFor(() => {
+      expect(screen.getByText(/^IDLE$/)).toBeInTheDocument();
+    });
+    expect(
+      screen.getByRole("button", { name: /start translation/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("active(succeeded) -> delete failure surfaces inline alert, stays terminal", async () => {
+    const user = await reachSucceededPhase();
+    vi.mocked(deleteJob).mockRejectedValueOnce(
+      new ApiError(409, "Job still in use"),
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: /delete job/i }),
+    );
+
+    // Inline delete-error alert renders.
+    const alert = await screen.findByTestId("delete-error");
+    expect(alert).toHaveTextContent(/Job still in use/i);
+
+    // Still in the terminal (succeeded) state — "Submit another" button
+    // is present, NOT "Start translation".
+    expect(
+      screen.getByRole("button", { name: /submit another/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /start translation/i }),
+    ).toBeNull();
+
+    // And clicking "Submit another" still resets cleanly + clears the
+    // lingering alert.
+    await user.click(
+      screen.getByRole("button", { name: /submit another/i }),
+    );
+    await waitFor(() => {
+      expect(screen.queryByTestId("delete-error")).toBeNull();
+    });
+    expect(
+      screen.getByRole("button", { name: /start translation/i }),
+    ).toBeInTheDocument();
   });
 });

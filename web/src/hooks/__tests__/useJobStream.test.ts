@@ -539,6 +539,40 @@ describe("useJobStream — active-stage tick", () => {
     expect(result.current.state.activeStageElapsedMs).toBe(0);
   });
 
+  it("preserves the SSE-authoritative start time when applyStatusSync fires mid-stage", async () => {
+    // Regression guard: `applyStatusSync`'s fallback-seed must only start a
+    // ticker when one isn't already running — otherwise an SSE reconnect
+    // mid-stage would reset the elapsed counter to 0. The authoritative
+    // baseline comes from the SSE `stage_start` event, which we don't want
+    // /status snapshots to overwrite. See useJobStream.ts D8 tradeoff note.
+    const { result } = renderHook(() => useJobStream("job-1"));
+    await waitFor(() => expect(capturedOptions).not.toBeNull());
+
+    act(() => {
+      capturedOptions!.onEvent({ type: "stage_start", stage: "s2", ts: 1 });
+    });
+    act(() => {
+      vi.advanceTimersByTime(3000);
+    });
+    expect(result.current.state.activeStageElapsedMs).toBe(3000);
+
+    // Simulate an SSE reconnect mid-stage: /status reports the same stage
+    // still active. The ticker was already running, so we must NOT reseed
+    // `stageStartMsRef` — that would reset elapsed to 0 on every reconnect.
+    act(() => {
+      capturedOptions!.onStatusSync?.(
+        baseStatus({ status: "running", current_stage: "s2" }),
+      );
+    });
+    expect(result.current.state.activeStageElapsedMs).toBe(3000);
+
+    // And the original baseline continues to advance — +2s → 5s total.
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(result.current.state.activeStageElapsedMs).toBe(5000);
+  });
+
   it("clears the ticker on unmount (no orphan interval leak)", async () => {
     const { unmount } = renderHook(() => useJobStream("job-1"));
     await waitFor(() => expect(capturedOptions).not.toBeNull());
