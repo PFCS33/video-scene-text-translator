@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 import numpy as np
 
@@ -21,13 +22,23 @@ logger = logging.getLogger(__name__)
 class VideoPipeline:
     """Orchestrates the 5-stage video text replacement pipeline."""
 
-    def __init__(self, config: PipelineConfig):
+    def __init__(
+        self,
+        config: PipelineConfig,
+        progress_callback: Callable[[str], None] | None = None,
+    ):
         self.config = config
+        self.progress_callback = progress_callback
         self.s1 = DetectionStage(config)
         self.s2 = FrontalizationStage(config)
         self.s3 = TextEditingStage(config)
         self.s4 = PropagationStage(config)
         self.s5 = RevertStage(config)
+
+    def _emit(self, event: str) -> None:
+        """Emit a stage-transition event to the progress callback, if set."""
+        if self.progress_callback is not None:
+            self.progress_callback(event)
 
     def run(self) -> PipelineResult:
         """Execute the full pipeline: S1 -> S2 -> S3 -> S4 -> S5."""
@@ -51,7 +62,9 @@ class VideoPipeline:
 
         # S1: Detection & Selection
         logger.info("=== Stage 1: Detection & Selection ===")
+        self._emit("stage_1_start")
         tracks = self.s1.run(frames_list)
+        self._emit("stage_1_done")
         if not tracks:
             logger.warning("No text tracks found. Outputting original video.")
             output_frames = [frames[i] for i in sorted(frames.keys())]
@@ -67,19 +80,27 @@ class VideoPipeline:
 
         # S2: Frontalization (computes homographies, writes into TextDetection)
         logger.info("=== Stage 2: Frontalization ===")
+        self._emit("stage_2_start")
         tracks = self.s2.run(tracks)
+        self._emit("stage_2_done")
 
         # S3: Text Editing
         logger.info("=== Stage 3: Text Editing ===")
+        self._emit("stage_3_start")
         tracks = self.s3.run(tracks, frames)
+        self._emit("stage_3_done")
 
         # S4: Propagation
         logger.info("=== Stage 4: Propagation ===")
+        self._emit("stage_4_start")
         propagated_rois = self.s4.run(tracks, frames)
+        self._emit("stage_4_done")
 
         # S5: Revert
         logger.info("=== Stage 5: Revert ===")
+        self._emit("stage_5_start")
         output_frames = self.s5.run(frames, propagated_rois, tracks)
+        self._emit("stage_5_done")
 
         # Write output video
         logger.info("Writing output video: %s", self.config.output_video)
