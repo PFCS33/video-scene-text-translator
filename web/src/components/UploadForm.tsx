@@ -19,7 +19,7 @@
  *   4. a request is in flight
  */
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 
 import {
@@ -195,7 +195,7 @@ export function UploadForm({
     targetLang !== "" &&
     !sameLang;
 
-  async function handleSubmit() {
+  const handleSubmit = useCallback(async () => {
     if (!canSubmit || !file) return;
     setError(null);
     setIsSubmitting(true);
@@ -207,7 +207,7 @@ export function UploadForm({
     } finally {
       setIsSubmitting(false);
     }
-  }
+  }, [canSubmit, file, sourceLang, targetLang, onJobCreated]);
 
   return (
     <Card className="w-full max-w-xl">
