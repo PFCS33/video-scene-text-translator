@@ -1,13 +1,16 @@
 /**
  * <LogPanel> — monospace scroll container for pipeline log lines.
  *
- * Auto-scroll
- * -----------
- * On every log-length change we push `scrollTop = scrollHeight` so new lines
- * are always visible. We don't detect "user scrolled up to read earlier
- * lines" yet — MVP accepts that behaviour; the user can drag the scroll
- * thumb and the next log will jank them back to the bottom. If this becomes
- * annoying we'll add an `autoFollow` ref gate.
+ * Auto-scroll with user-scroll escape hatch
+ * -----------------------------------------
+ * New logs auto-scroll to the bottom ONLY when the user is already at the
+ * bottom (within a small threshold). If the user has scrolled up to read
+ * earlier lines, new arrivals don't jank the view — they keep reading.
+ * The moment they scroll back down to the bottom, auto-follow resumes.
+ *
+ * Implementation: track `isAtBottom` in a ref, updated on scroll events.
+ * The auto-scroll effect only fires scrollTop=scrollHeight when that flag
+ * is true at the moment of the new log arrival.
  *
  * Level styling
  * -------------
@@ -35,6 +38,10 @@ const LEVEL_CLASS: Record<LogLevel, string> = {
   error: "text-destructive",
 };
 
+// Distance (px) from the bottom that still counts as "at the bottom" for
+// auto-follow purposes. Absorbs sub-pixel rounding and browser edge cases.
+const BOTTOM_THRESHOLD_PX = 8;
+
 function formatTs(ts: number): string {
   const d = new Date(ts * 1000);
   // Pad helpers; avoids pulling in date-fns for one formatter.
@@ -44,14 +51,24 @@ function formatTs(ts: number): string {
   return `${hh}:${mm}:${ss}`;
 }
 
+function isScrolledToBottom(el: HTMLElement): boolean {
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_THRESHOLD_PX;
+}
+
 export function LogPanel({ logs }: LogPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
+  // Default to true so the panel auto-follows on first mount (the initial
+  // scrollHeight is 0, which trivially satisfies "at bottom").
+  const isAtBottomRef = useRef(true);
 
   useEffect(() => {
     const el = panelRef.current;
     if (!el) return;
-    // Pin to bottom on any log count change.
-    el.scrollTop = el.scrollHeight;
+    // Only auto-scroll if the user was already at the bottom before this
+    // log arrived. If they'd scrolled up, leave their view alone.
+    if (isAtBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
   }, [logs.length]);
 
   return (
@@ -59,6 +76,9 @@ export function LogPanel({ logs }: LogPanelProps) {
       ref={panelRef}
       data-testid="log-panel"
       aria-label="Pipeline logs"
+      onScroll={(e) => {
+        isAtBottomRef.current = isScrolledToBottom(e.currentTarget);
+      }}
       className="h-48 overflow-y-auto rounded-md border bg-muted/30 p-3 font-mono text-xs leading-relaxed"
     >
       {logs.length === 0 ? (
