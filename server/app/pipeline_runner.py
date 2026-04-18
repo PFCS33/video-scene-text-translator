@@ -343,11 +343,20 @@ def run_pipeline_job(
     # Attach the log bridge. We install on the `src` logger (parent of
     # `src.pipeline`, `src.stages.*`, etc.) so every pipeline logger in the
     # tree feeds through it. Ensure INFO propagates: if the parent level is
-    # NOTSET or above INFO, bump it for the duration of the run.
+    # NOTSET or above INFO, bump it.
+    #
+    # NOTE — we LOWER the level but never restore it. A naive
+    # save-prior-and-restore pattern races under concurrent runs: thread A
+    # saves level L and bumps to INFO; thread B saves INFO (already bumped)
+    # and bumps to INFO; thread A finishes and restores L; thread B finishes
+    # and restores INFO — corrupting the original L. JobManager is
+    # single-worker today, so the race can't fire in practice, but the fix
+    # is cheap: since the only mutation is LOWER to INFO (never raise),
+    # leaving it lowered is always safe. Pipeline logs are the only
+    # consumer of this tree in our process.
     handler = _PipelineLogHandler(emit)
     src_logger = logging.getLogger("src")
     src_logger.addHandler(handler)
-    prior_level = src_logger.level
     if src_logger.level == logging.NOTSET or src_logger.level > logging.INFO:
         src_logger.setLevel(logging.INFO)
 
@@ -367,7 +376,6 @@ def run_pipeline_job(
             )
         )
     finally:
-        # Always detach, even on exception — leaves the global logging
-        # state exactly as we found it. JobManager handles ErrorEvent.
+        # Always detach, even on exception. JobManager handles ErrorEvent.
+        # Intentionally no setLevel restore — see note above.
         src_logger.removeHandler(handler)
-        src_logger.setLevel(prior_level)
