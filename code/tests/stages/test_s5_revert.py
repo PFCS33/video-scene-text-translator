@@ -881,3 +881,100 @@ class TestTemporalSmoothing:
         # Non-spike frames should be nearly unchanged.
         assert np.allclose(smoothed[0], trajectories[0], atol=2.0)
         assert np.allclose(smoothed[4], trajectories[4], atol=2.0)
+
+
+class TestPreInpaintBackendDispatch:
+    """RevertStage._get_pre_inpainter dispatch for srnet vs hisam backends.
+
+    The pre-inpaint path is separate from S4's LCM inpainter — S5 has its
+    own checkpoint + backend so users can tune boundary scrubbing
+    independently of lighting-correction backgrounds.
+    """
+
+    def test_srnet_backend_constructs_srnet_inpainter(self, default_config, monkeypatch):
+        import src.stages.s4_propagation.srnet_inpainter as srnet_mod
+
+        class _StubSRNetInpainter:
+            def __init__(self, checkpoint_path, device):
+                self.checkpoint_path = checkpoint_path
+                self.device = device
+
+        monkeypatch.setattr(srnet_mod, "SRNetInpainter", _StubSRNetInpainter)
+
+        default_config.revert.pre_inpaint_backend = "srnet"
+        default_config.revert.pre_inpaint_checkpoint = "/fake/srnet.model"
+        default_config.revert.pre_inpaint_device = "cpu"
+
+        stage = RevertStage(default_config)
+        inp = stage._get_pre_inpainter()
+
+        assert isinstance(inp, _StubSRNetInpainter)
+        assert inp.checkpoint_path == "/fake/srnet.model"
+        assert inp.device == "cpu"
+
+    def test_hisam_backend_constructs_segmentation_inpainter(
+        self, default_config, monkeypatch,
+    ):
+        import src.stages.s4_propagation.segmentation_inpainter as seg_mod
+
+        class _StubHiSAMInpainter:
+            def __init__(self, checkpoint_path, device, model_type,
+                         mask_dilation_px, inpaint_method, use_patch_mode):
+                self.checkpoint_path = checkpoint_path
+                self.device = device
+                self.model_type = model_type
+                self.mask_dilation_px = mask_dilation_px
+                self.inpaint_method = inpaint_method
+                self.use_patch_mode = use_patch_mode
+
+        monkeypatch.setattr(
+            seg_mod, "SegmentationBasedInpainter", _StubHiSAMInpainter,
+        )
+
+        default_config.revert.pre_inpaint_backend = "hisam"
+        default_config.revert.pre_inpaint_checkpoint = "/fake/hisam.pth"
+        default_config.revert.pre_inpaint_device = "cpu"
+        default_config.revert.pre_inpaint_hisam_model_type = "vit_b"
+        default_config.revert.pre_inpaint_hisam_mask_dilation_px = 5
+        default_config.revert.pre_inpaint_hisam_inpaint_method = "telea"
+        default_config.revert.pre_inpaint_hisam_use_patch_mode = True
+
+        stage = RevertStage(default_config)
+        inp = stage._get_pre_inpainter()
+
+        assert isinstance(inp, _StubHiSAMInpainter)
+        assert inp.checkpoint_path == "/fake/hisam.pth"
+        assert inp.device == "cpu"
+        assert inp.model_type == "vit_b"
+        assert inp.mask_dilation_px == 5
+        assert inp.inpaint_method == "telea"
+        assert inp.use_patch_mode is True
+
+    def test_unknown_backend_raises(self, default_config):
+        default_config.revert.pre_inpaint_backend = "bogus"
+        stage = RevertStage(default_config)
+
+        with pytest.raises(ValueError, match="pre_inpaint_backend"):
+            stage._get_pre_inpainter()
+
+    def test_cached_after_first_call(self, default_config, monkeypatch):
+        """Second _get_pre_inpainter call reuses the cached instance."""
+        import src.stages.s4_propagation.srnet_inpainter as srnet_mod
+
+        call_count = {"n": 0}
+
+        class _CountingSRNetInpainter:
+            def __init__(self, checkpoint_path, device):
+                call_count["n"] += 1
+
+        monkeypatch.setattr(srnet_mod, "SRNetInpainter", _CountingSRNetInpainter)
+
+        default_config.revert.pre_inpaint_backend = "srnet"
+        default_config.revert.pre_inpaint_checkpoint = "/fake/srnet.model"
+
+        stage = RevertStage(default_config)
+        first = stage._get_pre_inpainter()
+        second = stage._get_pre_inpainter()
+
+        assert first is second
+        assert call_count["n"] == 1

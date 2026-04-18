@@ -818,3 +818,79 @@ class TestS3InpainterWiring:
 
         assert isinstance(editor, AnyText2Editor)
         assert editor._inpainter is None
+
+    def test_s3_passes_hisam_inpainter_when_configured(self, tmp_path, monkeypatch):
+        """backend='hisam' + checkpoint + adaptive_mask → editor gets a
+        SegmentationBasedInpainter. Regression guard for the S3 fallback that
+        silently disabled adaptive mask when users set inpainter_backend to
+        'hisam' (S3 only knew about 'srnet')."""
+        import src.stages.s4_propagation.segmentation_inpainter as seg_mod
+        from src.config import PipelineConfig
+        from src.stages.s3_text_editing import TextEditingStage
+
+        class _StubHiSAMInpainter:
+            def __init__(self, checkpoint_path, device, model_type,
+                         mask_dilation_px, inpaint_method, use_patch_mode):
+                self.checkpoint_path = checkpoint_path
+                self.device = device
+                self.model_type = model_type
+                self.mask_dilation_px = mask_dilation_px
+                self.inpaint_method = inpaint_method
+                self.use_patch_mode = use_patch_mode
+
+            def inpaint(self, x):
+                return x
+
+        monkeypatch.setattr(
+            seg_mod, "SegmentationBasedInpainter", _StubHiSAMInpainter,
+        )
+
+        fake_ckpt = tmp_path / "hisam.pth"
+        fake_ckpt.write_bytes(b"not a real checkpoint")
+
+        config = PipelineConfig()
+        config.text_editor.backend = "anytext2"
+        config.text_editor.server_url = "http://fake:7860/"
+        config.text_editor.anytext2_adaptive_mask = True
+        config.propagation.inpainter_backend = "hisam"
+        config.propagation.inpainter_checkpoint_path = str(fake_ckpt)
+        config.propagation.inpainter_device = "cpu"
+        config.propagation.hisam_model_type = "vit_b"
+        config.propagation.hisam_mask_dilation_px = 5
+        config.propagation.hisam_inpaint_method = "telea"
+        config.propagation.hisam_use_patch_mode = True
+
+        stage = TextEditingStage(config)
+        editor = stage._init_editor()
+
+        assert isinstance(editor, AnyText2Editor)
+        assert isinstance(editor._inpainter, _StubHiSAMInpainter)
+        assert editor._inpainter.checkpoint_path == str(fake_ckpt)
+        assert editor._inpainter.device == "cpu"
+        assert editor._inpainter.model_type == "vit_b"
+        assert editor._inpainter.mask_dilation_px == 5
+        assert editor._inpainter.inpaint_method == "telea"
+        assert editor._inpainter.use_patch_mode is True
+
+    def test_s3_hisam_no_checkpoint_falls_back_to_none(self, caplog):
+        """backend='hisam' + empty checkpoint path → warn + editor gets None.
+        Same graceful-fallback contract as the srnet branch."""
+        import logging
+
+        from src.config import PipelineConfig
+        from src.stages.s3_text_editing import TextEditingStage
+
+        config = PipelineConfig()
+        config.text_editor.backend = "anytext2"
+        config.text_editor.server_url = "http://fake:7860/"
+        config.text_editor.anytext2_adaptive_mask = True
+        config.propagation.inpainter_backend = "hisam"
+        config.propagation.inpainter_checkpoint_path = None
+
+        stage = TextEditingStage(config)
+        with caplog.at_level(logging.WARNING, logger="src.stages.s3_text_editing"):
+            editor = stage._init_editor()
+
+        assert isinstance(editor, AnyText2Editor)
+        assert editor._inpainter is None
+        assert any("hisam" in r.message.lower() for r in caplog.records)

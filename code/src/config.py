@@ -115,10 +115,29 @@ class PropagationConfig:
     lcm_neighbor_self_weight: float = 2.0
 
     # Background inpainter for LCM. Only loaded when use_lcm=True.
-    # Backends: "srnet" (lksshw/SRNet wrapper) or "none".
+    # Backends: "srnet" (lksshw/SRNet wrapper), "hisam" (Hi-SAM stroke
+    # segmentation + cv2.inpaint Navier-Stokes), or "none".
     inpainter_backend: str = "none"
     inpainter_checkpoint_path: str | None = None
     inpainter_device: str = "cuda"
+
+    # Hi-SAM-specific knobs (only used when inpainter_backend == "hisam").
+    # model_type: Hi-SAM ViT backbone size ("vit_b", "vit_l", "vit_h").
+    # The default vit_l pairs with sam_tss_l_textseg.pth — stroke-level
+    # segmentation trained on TextSeg. Larger variants are more accurate
+    # but slower.
+    hisam_model_type: str = "vit_l"
+    # Pixel dilation applied to the stroke mask before inpainting. Prevents
+    # anti-aliased stroke halos from bleeding into the inpainted output.
+    hisam_mask_dilation_px: int = 3
+    # OpenCV inpaint method: "ns" (Navier-Stokes, Laplace-style, edge-aware)
+    # or "telea" (Fast Marching, faster but blurrier).
+    hisam_inpaint_method: str = "ns"
+    # Sliding-window patch-mode inference (Hi-SAM's demo_hisam.py
+    # --patch_mode). Off by default — canonical ROIs are small enough
+    # for single-pass. Enable if you feed expanded ROIs with
+    # roi_context_expansion > 0.3.
+    hisam_use_patch_mode: bool = False
 
     # Blur Prediction Network (TPM/BPN). Applies a per-frame differential
     # blur to the LCM-corrected ROI to match each frame's blur level.
@@ -174,15 +193,30 @@ class RevertConfig:
 
     # Pre-composite background inpainting. Before compositing each
     # edited ROI, warp the underlying frame region (expanded slightly
-    # beyond the detection quad) into a rectangle, run SRNet to erase
-    # any original text that might leak past the quad edges, then warp
-    # back. This prevents Poisson blending artifacts caused by remnant
-    # original text at the boundary when the tracking quad doesn't
-    # perfectly cover the source text.
+    # beyond the detection quad) into a rectangle, inpaint the region
+    # to erase any original text that might leak past the quad edges,
+    # then warp back. This prevents Poisson blending artifacts caused
+    # by remnant original text at the boundary when the tracking quad
+    # doesn't perfectly cover the source text.
+    #
+    # Two pluggable backends, independent from S4's inpainter config
+    # (so you can run e.g. SRNet in S4 and Hi-SAM in S5, or different
+    # checkpoints of the same backend):
+    # - "srnet": lksshw/SRNet text-removal network
+    # - "hisam": Hi-SAM stroke segmentation + cv2.inpaint (Navier-Stokes)
     pre_inpaint: bool = False
     pre_inpaint_expansion: float = 0.15  # expand quad by this fraction from centroid
+    pre_inpaint_backend: str = "srnet"
     pre_inpaint_checkpoint: str = "../third_party/SRNet/checkpoints/trained_final_5M_.model"
     pre_inpaint_device: str = "cuda"
+    # Hi-SAM-specific knobs (only used when pre_inpaint_backend == "hisam").
+    # Kept separate from propagation.hisam_* so S4 and S5 can tune
+    # independently (e.g. heavier dilation in S5 to aggressively scrub
+    # boundary leakage without touching S4's LCM-ratio inpaint).
+    pre_inpaint_hisam_model_type: str = "vit_l"
+    pre_inpaint_hisam_mask_dilation_px: int = 3
+    pre_inpaint_hisam_inpaint_method: str = "ns"  # "ns" or "telea"
+    pre_inpaint_hisam_use_patch_mode: bool = False
 
     # Temporal smoothing of the final projected quad corners across
     # frames within each track. Applies a center-weighted (Gaussian)

@@ -65,11 +65,19 @@ propagation:
   clip_limit: 2.0
   blend_blur_kernel: 5
   use_lcm: true
-  # Background inpainter for LCM. Only loaded when use_lcm=True.
-  # Backends: "srnet" (lksshw/SRNet wrapper) or "none".
-  inpainter_backend: "srnet"
-  inpainter_checkpoint_path: "../third_party/SRNet/checkpoints/trained_final_5M_.model"
+  # Background inpainter for LCM.
+  # Backends: "srnet", "hisam", or "none".
+  # inpainter_backend: "srnet"
+  inpainter_backend: "hisam"   # swap in Hi-SAM stroke seg + cv2.inpaint
+  # inpainter_checkpoint_path: "../third_party/SRNet/checkpoints/trained_final_5M_.model"
+  # For hisam, point inpainter_checkpoint_path at a Hi-SAM head checkpoint, e.g.:
+  inpainter_checkpoint_path: "../third_party/Hi-SAM/pretrained_checkpoint/sam_tss_l_textseg.pth"
   inpainter_device: "cuda"
+  # Hi-SAM-specific (only used when inpainter_backend: "hisam")
+  hisam_model_type: "vit_l"
+  hisam_mask_dilation_px: 3
+  hisam_inpaint_method: "ns"    # "ns" (Navier-Stokes) or "telea"
+  hisam_use_patch_mode: false
   # Blur Prediction Network (TPM/BPN). Applies a per-frame differential
   # blur to the LCM-corrected ROI to match each frame's blur level.
   # Only invoked when both use_lcm and use_bpn are True (paper order:
@@ -101,8 +109,22 @@ revert:
   refiner_rejection_warn_threshold: 0.1
   temporal_smooth_window: 7
   temporal_smooth_sigma: 10
-  pre_inpaint: false
+  pre_inpaint: true
   pre_inpaint_expansion: 0.15   # 15% expansion from centroid
+  # Pre-inpaint backend: "srnet" or "hisam". Independent from
+  # propagation.inpainter_backend — S4 and S5 can use different backends
+  # (e.g. SRNet in S4, Hi-SAM in S5) or different checkpoints.
+  # pre_inpaint_backend: "srnet"
+  pre_inpaint_backend: "hisam"   # swap in Hi-SAM stroke seg + cv2.inpaint
+  # pre_inpaint_checkpoint: "../third_party/SRNet/checkpoints/trained_final_5M_.model"
+  # For hisam, point pre_inpaint_checkpoint at a Hi-SAM head checkpoint, e.g.:
+  pre_inpaint_checkpoint: "../third_party/Hi-SAM/pretrained_checkpoint/sam_tss_l_textseg.pth"
+  pre_inpaint_device: "cuda"
+  # Hi-SAM-specific (only used when pre_inpaint_backend: "hisam")
+  pre_inpaint_hisam_model_type: "vit_l"
+  pre_inpaint_hisam_mask_dilation_px: 3
+  pre_inpaint_hisam_inpaint_method: "ns"    # "ns" (Navier-Stokes) or "telea"
+  pre_inpaint_hisam_use_patch_mode: false
 
 text_editor:
   backend: "anytext2"

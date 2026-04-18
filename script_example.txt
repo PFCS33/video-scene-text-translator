@@ -1,0 +1,1 @@
+python scripts/run_pipeline.py --input /workspace/STRIVE_Datasets/RealWorld/videos/real_video7.mp4 --output ../test_output/processed.mp4 --config config/adv.yaml 

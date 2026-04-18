@@ -13,6 +13,7 @@ import logging
 
 import cv2
 import numpy as np
+from tqdm import tqdm
 
 from src.config import PipelineConfig
 from src.data_types import BBox, PropagatedROI, TextTrack
@@ -290,17 +291,49 @@ class RevertStage:
         return (proj[:, :2] / w).astype(np.float64)
 
     def _get_pre_inpainter(self):
-        """Lazy-load the SRNet inpainter for pre-composite background clearing."""
+        """Lazy-load the configured pre-composite background inpainter.
+
+        Dispatches on ``config.pre_inpaint_backend``:
+
+        - ``"srnet"``: lksshw/SRNet wrapper (same class S4 uses).
+        - ``"hisam"``: Hi-SAM stroke segmentation + cv2.inpaint.
+
+        Raises ``ValueError`` on an unknown backend — unlike S3, S5's
+        pre-inpaint is an explicit pipeline stage opted into via
+        ``pre_inpaint=True``; misconfiguration should fail loudly rather
+        than silently skip.
+        """
         if self._pre_inpainter is not None:
             return self._pre_inpainter
-        from src.stages.s4_propagation.srnet_inpainter import SRNetInpainter
-        logger.info("S5: loading pre-composite inpainter from %s",
-                     self.config.pre_inpaint_checkpoint)
-        self._pre_inpainter = SRNetInpainter(
-            checkpoint_path=self.config.pre_inpaint_checkpoint,
-            device=self.config.pre_inpaint_device,
+        backend = self.config.pre_inpaint_backend
+        if backend == "srnet":
+            from src.stages.s4_propagation.srnet_inpainter import SRNetInpainter
+            logger.info("S5: loading SRNet pre-composite inpainter from %s",
+                         self.config.pre_inpaint_checkpoint)
+            self._pre_inpainter = SRNetInpainter(
+                checkpoint_path=self.config.pre_inpaint_checkpoint,
+                device=self.config.pre_inpaint_device,
+            )
+            return self._pre_inpainter
+        if backend == "hisam":
+            from src.stages.s4_propagation.segmentation_inpainter import (
+                SegmentationBasedInpainter,
+            )
+            logger.info("S5: loading Hi-SAM pre-composite inpainter from %s",
+                         self.config.pre_inpaint_checkpoint)
+            self._pre_inpainter = SegmentationBasedInpainter(
+                checkpoint_path=self.config.pre_inpaint_checkpoint,
+                device=self.config.pre_inpaint_device,
+                model_type=self.config.pre_inpaint_hisam_model_type,
+                mask_dilation_px=self.config.pre_inpaint_hisam_mask_dilation_px,
+                inpaint_method=self.config.pre_inpaint_hisam_inpaint_method,
+                use_patch_mode=self.config.pre_inpaint_hisam_use_patch_mode,
+            )
+            return self._pre_inpainter
+        raise ValueError(
+            f"Unknown pre_inpaint_backend: {backend!r}. "
+            f"Expected one of: 'srnet', 'hisam'."
         )
-        return self._pre_inpainter
 
     @staticmethod
     def _expand_quad_from_centroid(
@@ -324,7 +357,8 @@ class RevertStage:
 
         1. Expand the quad outward from its centroid.
         2. Warp the expanded region to a rectangle.
-        3. Run SRNet to erase any text.
+        3. Run the configured pre-composite inpainter (SRNet or Hi-SAM)
+           to erase any text.
         4. Warp the inpainted result back into the frame.
 
         Returns the modified frame (may be a new array or in-place).
@@ -559,11 +593,24 @@ class RevertStage:
             )
 
         # ----- Pass 2: composite -----
+        # Progress bar sized to total propagated ROIs (one inpaint call
+        # per ROI when pre_inpaint is on). Disabled otherwise, since the
+        # rest of the composite path is fast enough not to need a bar.
+        total_rois = sum(len(rois) for rois in propagated_rois.values())
+        pbar = tqdm(
+            total=total_rois,
+            desc="S5 pre-inpaint",
+            unit="roi",
+            leave=False,
+            disable=not self.config.pre_inpaint,
+        )
+
         output_frames = []
         for frame_idx in sorted_idxs:
             frame = frames[frame_idx].copy()
 
             for prop_roi in propagated_rois.get(frame_idx, []):
+                pbar.update(1)
                 track = tracks_by_id.get(prop_roi.track_id)
                 if track is None:
                     continue
@@ -660,4 +707,5 @@ class RevertStage:
             else:
                 logger.debug(msg, *args)
 
+        pbar.close()
         return output_frames
