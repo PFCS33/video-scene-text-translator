@@ -14,12 +14,10 @@ describe("<IdlePlaceholder>", () => {
     render(<IdlePlaceholder />);
 
     expect(screen.getByText(/WAITING FOR A JOB/i)).toBeInTheDocument();
-    // Body copy references the left-column action + what will appear here.
+    // Body copy references the left-column action and what will appear here.
+    expect(screen.getByText(/pick a file/i)).toBeInTheDocument();
     expect(
-      screen.getByText(/pick a video on the left/i),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(/progress will appear here/i),
+      screen.getByText(/appear in this window/i),
     ).toBeInTheDocument();
   });
 });
