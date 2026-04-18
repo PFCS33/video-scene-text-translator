@@ -620,7 +620,6 @@ function renderLanguagePairSlotForNonActive(
             onTargetChange={() => {}}
             onSwap={() => {}}
             disabled
-            footer={"\u25CF LOCKED WHILE UPLOADING"}
           />
         </section>
       );
@@ -636,7 +635,6 @@ function renderLanguagePairSlotForNonActive(
             onTargetChange={() => {}}
             onSwap={() => {}}
             locked
-            footer={"\u25CF HOLD WHILE JOB FINISHES"}
           />
         </section>
       );
@@ -880,7 +878,6 @@ function renderActiveLanguagePairSlot(
           onTargetChange={() => {}}
           onSwap={() => {}}
           locked
-          footer={"\u25CF LOCKED WHILE RUNNING"}
         />
       )}
     </section>
