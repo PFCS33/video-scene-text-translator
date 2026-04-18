@@ -57,6 +57,9 @@ class ReferenceSelector:
     # MyMemoryTranslator requires full locale codes (e.g. "en-GB", "es-ES")
     # while GoogleTranslator accepts the short forms we use everywhere else.
     # Map short → locale on fallback so the two backends stay interchangeable.
+    # Entries are short → MyMemory locale code EXCEPT "zh-CN" which is already
+    # the canonical MyMemory locale (not a short form). New Chinese variants
+    # (zh-TW, zh-HK, …) need an explicit entry here — they won't auto-expand.
     _MYMEMORY_LOCALE: dict[str, str] = {
         "en": "en-GB",
         "es": "es-ES",
