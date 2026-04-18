@@ -182,18 +182,18 @@ App
 
 ## Done When
 
-- [ ] End-to-end demo flow works on a dev machine: upload `real_video6.mp4`, pick en→zh, see 5 stages turn green sequentially, log panel scrolls with pipeline logs, download button enables, downloaded MP4 plays in browser.
-- [ ] 409 returned when a second job is submitted while one is running; client shows a "rejoin existing run" link instead of an error.
-- [ ] Log panel reaches the end and shows a final "Pipeline complete" message tied to the `done` event.
-- [ ] `server/tests/` green with a mocked pipeline; one integration test (marked `gpu`) runs the real pipeline on a tiny fixture video.
-- [ ] `web/` `vitest` green on component tests.
-- [ ] `ruff check server/` clean; `eslint web/` clean; `tsc --noEmit` clean.
-- [ ] Frontend is served from FastAPI at `http://localhost:8000/` after `build_frontend.sh`.
-- [ ] Cloudflare Tunnel dry run: submit from a different network, full flow works, SSE survives ~90s pipeline run without dropping.
-- [ ] `docs/architecture.md` Web Application section added.
-- [ ] `server/CLAUDE.md` + `web/CLAUDE.md` written.
-- [ ] Code review by `@reviewer` — feedback addressed.
-- [ ] Changes committed as atomic commits + PR opened.
+- [x] End-to-end demo flow works on a dev machine: upload, pick langs, see 5 stages turn green sequentially, log panel scrolls with pipeline logs, download button enables, downloaded MP4 plays in browser. ✅ Verified by user via SSH port-forward; en→zh-CN tested after the locale-code fix.
+- [x] 409 returned when a second job is submitted while one is running; client shows a "rejoin existing run" link instead of an error. ✅ `UploadForm` renders an Alert with the active job_id and a Rejoin button (R8). Test `test_create_job_returns_409_with_active_job_id_on_concurrent_submit` pins it server-side; UI test pins the client mapping.
+- [~] Log panel reaches the end and shows a final "Pipeline complete" message tied to the `done` event. **Partial:** logs scroll and the final pipeline log line ("Pipeline complete. N tracks processed, ...") arrives before `done`. There is no UI element specifically labeled "Pipeline complete" — the StageProgress turning all-green + ResultPanel appearing serve that role visually. Acceptable for MVP.
+- [x] `server/tests/` green with a mocked pipeline; one integration test (marked `gpu`) runs the real pipeline on a tiny fixture video. ✅ 87 default + 3 gpu (apple.mp4 plumbing + synthetic-text full-stack + dimensions check).
+- [x] `web/` `vitest` green on component tests. ✅ 60 tests across 11 files.
+- [x] `ruff check server/` clean; `eslint web/` clean; `tsc --noEmit` clean. ✅ All clean (eslint has 2 expected warnings on shadcn `Badge`/`Button` re-exporting `cva()` variants — left as-is per D6).
+- [x] Frontend is served from FastAPI at `http://localhost:8000/` after `build_frontend.sh`. ✅ `_mount_spa(app, STATIC_DIR)` after the API router; verified by curl smoke + dry run.
+- [~] Cloudflare Tunnel dry run: submit from a different network, full flow works, SSE survives ~90s pipeline run without dropping. **DEFERRED post-MVP** per user (Step 17). SSH port-forward is the local equivalent and was verified to work.
+- [x] `docs/architecture.md` Web Application section added.
+- [x] `server/CLAUDE.md` + `web/CLAUDE.md` written.
+- [x] Code review by `@reviewer` — feedback addressed. ✅ Two rounds (per-part + full-change), 22 review-fix commits.
+- [~] Changes committed as atomic commits + PR opened. Atomic commits ✅ (39 commits pushed to `origin/feat/web-client`); **PR opening still pending.**
 
 ## Progress
 
@@ -215,5 +215,5 @@ App
 - [x] **Step 16** — Full demo dry run on the dev box: real pipeline, real AnyText2, real upload/download. ✅ User-driven dry run via SSH port-forward + browser. End-to-end flow (upload → 5-stage SSE progress → download → playable output) succeeded. Two bugs surfaced and fixed as individual commits: (a) `zh-cn` → `zh-CN` in the curated language list (GoogleTranslator + MyMemory both require the uppercase locale code); (b) MyMemory fallback in `code/src/stages/s1_detection/selector.py` now maps short codes (`en`, `es`, …) to full locale codes (`en-GB`, `es-ES`, …) so the fallback works when GoogleTranslator transiently fails. Separately surfaced (deferred, not fixed): `revert.refiner_checkpoint_path` auto-disabled when missing; checkpoint paths in adv.yaml are CLI-relative and are now resolved against `code/` by `_build_config`.
 - [~] **Step 17 — DEFERRED (post-MVP).** Cloudflare Tunnel dry run + SSE survival check from a different network. (R9) Not required to run the app; local `0.0.0.0:8000` + same-network access is sufficient for MVP. Revisit only if the demo audience needs public HTTPS. Drop-in alternatives on the day: ngrok, screen-share, or a laptop on the same network.
 - [x] **Step 18** — Update `docs/architecture.md`. ✅ Appended top-level **Web Application** section (264 lines total, up from 108). Architecture ASCII diagram, what-lives-where pointers, 7-row API surface table (incl. `GET /` for SPA), TypeScript SSE event union, 4-step job lifecycle, concurrency/persistence model, design decisions cross-referenced to D-numbers (D3/D5/D9/D11/D15/D16, R3), known limitations (D14/R1 cancellation, D4/R8 serialization, >500-frame memory, ffmpeg-on-PATH), dev + prod run blocks pointing at the two scripts.
-- [ ] **Step 19** — `@reviewer` pass, address feedback.
-- [ ] **Step 20** — Atomic commits + PR.
+- [x] **Step 19** — `@reviewer` pass, address feedback. ✅ Two rounds. **Round 1:** three parallel per-part reviews (web/server/pipeline). 10 must+should fixes landed atomically (web ESLint config + 5, server multicast SSE + 5, pipeline 1). 6 nice-to-have items triaged and fixed (LogPanel scroll escape, dev.sh env check, atomic build swap, type-mapping doc, multicast HTTP test, _MYMEMORY_LOCALE → module scope). 4 reviewer-labeled "important" items deferred and then addressed in a follow-up batch (handleSubmit useCallback, _wait_status removal, src_logger thread-safety, sweep_old_jobs sort). **Round 2 (full-change cross-cutting):** caught 2 blocking + 3 should-fix + 3 worth-noting. Addressed 6 (blocking: SSE-reconnect outputUrl bug + hardcoded URL; should-fix: queued→connecting in seed-fetch, terminal-resync stream close, server CLAUDE.md miniforge3 path; new test for seed-fetch succeeded). Deferred 2 (Pydantic↔TS round-trip contract test, DELETE response Pydantic model). Total: 22 review-fix commits. Final test counts: 433 pipeline + 87+3 server + 60 web, all green.
+- [~] **Step 20** — Atomic commits + PR. Atomic commits ✅ (39 conventional commits since branch start; pushed to `origin/feat/web-client`). **PR opening pending.**
