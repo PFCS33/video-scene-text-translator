@@ -39,20 +39,16 @@ vi.mock("@/api/sse", () => ({
   }),
 }));
 
-vi.mock("@/api/client", () => ({
-  getJobStatus: vi.fn(),
-  // ApiError pass-through so import-site consumers don't break when the hook
-  // imports from "@/api/client" as well. Not used directly in these tests.
-  ApiError: class ApiError extends Error {
-    status: number;
-    detail: unknown;
-    constructor(status: number, detail: unknown) {
-      super(`API error ${status}`);
-      this.status = status;
-      this.detail = detail;
-    }
-  },
-}));
+vi.mock("@/api/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/client")>();
+  return {
+    ...actual,
+    // Only getJobStatus is stubbed — outputUrl / eventsUrl are pure helpers
+    // and we want the real string-building behaviour so assertions like
+    // `/api/jobs/job-1/output` are the actual app path, not a mock constant.
+    getJobStatus: vi.fn(),
+  };
+});
 
 import { useJobStream } from "../useJobStream";
 import { getJobStatus } from "@/api/client";
@@ -259,5 +255,66 @@ describe("useJobStream", () => {
     expect(result.current.state.stages.s1).toBe("done");
     expect(result.current.state.stages.s3).toBe("done");
     expect(result.current.state.stages.s5).toBe("pending");
+  });
+
+  it("seed-fetch on a succeeded job sets outputUrl so the download button renders", async () => {
+    // Rejoining after the job already finished (e.g. page reload). The hook's
+    // seed fetch returns status=succeeded; we must populate outputUrl even
+    // though we'll never receive the SSE `done` event.
+    vi.mocked(getJobStatus).mockResolvedValueOnce(
+      baseStatus({
+        status: "succeeded",
+        output_available: true,
+      }),
+    );
+
+    const { result } = renderHook(() => useJobStream("job-1"));
+
+    await waitFor(() => {
+      expect(result.current.state.status).toBe("succeeded");
+    });
+
+    expect(result.current.state.outputUrl).toBe("/api/jobs/job-1/output");
+    expect(result.current.state.stages.s5).toBe("done");
+    expect(result.current.state.currentStage).toBeNull();
+  });
+
+  it("onStatusSync on a succeeded job sets outputUrl and closes the stream", async () => {
+    // SSE reconnect scenario: the `done` event landed in the reconnect gap,
+    // so applyStatusSync is the only path that learns the job is done.
+    // It must (a) populate outputUrl, and (b) close the dead stream to
+    // break the reconnect loop.
+    const { result } = renderHook(() => useJobStream("job-1"));
+    await waitFor(() => expect(capturedOptions).not.toBeNull());
+
+    act(() => {
+      capturedOptions!.onStatusSync?.(
+        baseStatus({ status: "succeeded", output_available: true }),
+      );
+    });
+
+    expect(result.current.state.status).toBe("succeeded");
+    expect(result.current.state.outputUrl).toBe("/api/jobs/job-1/output");
+    // stream was closed after the terminal sync — no reconnect loop
+    expect(mockClose).toHaveBeenCalled();
+  });
+
+  it("seed-fetch on a queued job maps status to connecting, not running", async () => {
+    // "queued" has no direct mapping in JobStreamState; treating it as
+    // "running" in the seed path misreports the badge before S1 starts.
+    vi.mocked(getJobStatus).mockResolvedValueOnce(
+      baseStatus({ status: "queued", current_stage: null }),
+    );
+
+    const { result } = renderHook(() => useJobStream("job-1"));
+
+    await waitFor(() => {
+      // Wait for the seed fetch to settle.
+      expect(vi.mocked(getJobStatus)).toHaveBeenCalled();
+    });
+
+    // Still "connecting", not "running", because no stage has started yet.
+    expect(result.current.state.status).toBe("connecting");
+    expect(result.current.state.currentStage).toBeNull();
   });
 });

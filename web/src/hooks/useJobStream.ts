@@ -37,7 +37,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { getJobStatus } from "@/api/client";
+import { getJobStatus, outputUrl } from "@/api/client";
 import { openEventStream, type EventStream } from "@/api/sse";
 import type {
   JobStatus,
@@ -235,10 +235,15 @@ export function useJobStream(jobId: string | null): UseJobStreamResult {
   const applyStatusSync = useCallback((status: JobStatus) => {
     setState((prev) => {
       if (status.status === "succeeded") {
+        // If the `done` event arrived during the SSE reconnect gap, this is
+        // the only place the client learns the job is finished — so we
+        // must also populate `outputUrl` here, not just on the SSE `done`
+        // event path. Without this the download button never appears.
         return {
           ...prev,
           status: "succeeded",
           stages: allDoneStages(),
+          outputUrl: prev.outputUrl ?? outputUrl(status.job_id),
           currentStage: null,
         };
       }
@@ -263,6 +268,14 @@ export function useJobStream(jobId: string | null): UseJobStreamResult {
       }
       return prev;
     });
+    // If the resync landed on a terminal status, the server-side SSE
+    // generator has already finished, so keep the stream around produces
+    // a noisy reconnect loop (server closes, browser reconnects, repeat).
+    // Close our end to break the cycle.
+    if (status.status === "succeeded" || status.status === "failed") {
+      streamRef.current?.close();
+      streamRef.current = null;
+    }
   }, []);
 
   useEffect(() => {
@@ -289,7 +302,7 @@ export function useJobStream(jobId: string | null): UseJobStreamResult {
               ...prev,
               status: "succeeded",
               stages: allDoneStages(),
-              outputUrl: `/api/jobs/${jobId}/output`,
+              outputUrl: outputUrl(jobId),
               currentStage: null,
             };
           }
@@ -305,9 +318,12 @@ export function useJobStream(jobId: string | null): UseJobStreamResult {
               currentStage: null,
             };
           }
+          // "queued" on the server has no direct mapping in our local
+          // JobStreamState — treat it as "connecting" so the UI doesn't
+          // falsely claim the pipeline is running before S1 starts.
           return {
             ...prev,
-            status: "running",
+            status: status.status === "queued" ? "connecting" : "running",
             stages,
             currentStage,
           };
