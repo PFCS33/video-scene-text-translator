@@ -8,9 +8,12 @@
   409 response whose body points the frontend at the running job (R8 —
   "rejoin existing run" UX).
 * Holds a `dict[job_id, _JobRecord]` in memory — no persistence (MVP).
-* Exposes a per-job `asyncio.Queue` populated from the worker thread via
-  `loop.call_soon_threadsafe`. Consumers iterate events via `subscribe()`;
-  the stream terminates on the first `DoneEvent` or `ErrorEvent` (D5).
+* Exposes per-subscriber `asyncio.Queue` s populated from the worker thread
+  via `loop.call_soon_threadsafe`. Each `subscribe()` call allocates its
+  own queue and registers it on the job record; `_emit_threadsafe`
+  broadcasts each event to every current subscriber. The stream terminates
+  on the first `DoneEvent` or `ErrorEvent` (D5). Late subscribers see no
+  past events — clients re-sync via `GET /status` on reconnect (D16).
 * Surfaces `get_active_job_id()` so the frontend can offer a rejoin link
   instead of a hard 409 (R8).
 
@@ -30,6 +33,7 @@ Event-loop gotcha:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 import traceback
@@ -94,8 +98,18 @@ class _JobRecord:
     """Mutable state for a single job.
 
     Fields prefixed `_` are internal bookkeeping and never leak outside the
-    manager. The `events` queue is populated from the worker thread via
+    manager. Subscriber queues are populated from the worker thread via
     `loop.call_soon_threadsafe` and consumed by `subscribe()` on the loop.
+
+    Multi-consumer fan-out: each ``subscribe()`` call appends its own fresh
+    ``asyncio.Queue`` to ``_subscribers`` and pops it in a ``finally`` block
+    on exit. ``_emit_threadsafe`` broadcasts each event to a *snapshot* of
+    ``_subscribers`` so concurrent unsubscribes don't trip iteration.
+
+    Late subscribers (e.g. an SSE reconnect after some events have already
+    fired) see no past events in their new queue — clients re-sync via
+    ``GET /status`` on reconnect per plan.md D16. Log-line loss across the
+    reconnect gap is accepted.
     """
 
     job_id: str
@@ -108,7 +122,7 @@ class _JobRecord:
     finished_at: float | None = None
     current_stage: str | None = None
     error: str | None = None
-    events: asyncio.Queue = field(default_factory=asyncio.Queue)
+    _subscribers: list[asyncio.Queue] = field(default_factory=list)
     _stage_start_ts: dict[str, float] = field(default_factory=dict)
     _future: Future | None = None
 
@@ -227,16 +241,30 @@ class JobManager:
         event is yielded before the iterator returns, so callers always see
         the final outcome.
 
+        Multi-consumer: each call allocates its own ``asyncio.Queue`` and
+        registers it on the job record so ``_emit_threadsafe`` can broadcast
+        to every active subscriber. The queue is removed in a ``finally``
+        block, covering both normal termination and cancellation of the
+        async generator.
+
         Raises `UnknownJobError` if the job is unknown.
         """
         record = self._jobs.get(job_id)
         if record is None:
             raise UnknownJobError(job_id)
-        while True:
-            event = await record.events.get()
-            yield event
-            if isinstance(event, (DoneEvent, ErrorEvent)):
-                return
+        queue: asyncio.Queue[SSEEvent] = asyncio.Queue()
+        record._subscribers.append(queue)
+        try:
+            while True:
+                event = await queue.get()
+                yield event
+                if isinstance(event, (DoneEvent, ErrorEvent)):
+                    return
+        finally:
+            # Best-effort remove — concurrent cleanup could have popped it
+            # already (though today only subscribe itself touches the list).
+            with contextlib.suppress(ValueError):
+                record._subscribers.remove(queue)
 
     def shutdown(self, wait: bool = True) -> None:
         """Stop the worker executor. Call from app shutdown hook / tests."""
@@ -255,13 +283,20 @@ class JobManager:
         return None
 
     def _emit_threadsafe(self, job_id: str, event: SSEEvent) -> None:
-        """Enqueue `event` on a job's queue from any thread."""
+        """Broadcast `event` to every active subscriber from any thread.
+
+        Iterates a snapshot of the subscriber list so a concurrent
+        unsubscribe (subscribe() returning from its ``finally``) doesn't
+        mutate the list mid-iteration. Each per-subscriber queue receives
+        its own `put_nowait` scheduled on the event loop via
+        `call_soon_threadsafe` (asyncio.Queue is not thread-safe, but
+        `put_nowait` inside the loop's thread is fine).
+        """
         record = self._jobs.get(job_id)
         if record is None:
             return
-        # call_soon_threadsafe schedules on the main loop; asyncio.Queue is
-        # not thread-safe but put_nowait inside the loop's thread is fine.
-        self._loop.call_soon_threadsafe(record.events.put_nowait, event)
+        for queue in list(record._subscribers):
+            self._loop.call_soon_threadsafe(queue.put_nowait, event)
 
     def _run_job(self, job_id: str) -> None:
         """Worker-thread entrypoint: run the pipeline and emit terminal event.

@@ -434,17 +434,74 @@ def test_get_status_404_for_unknown_id(storage_root: Path):
 
 
 def test_events_endpoint_streams_sse_to_terminal(storage_root: Path):
-    # Arrange
-    app = _make_app(_simple_runner_factory())
+    # Arrange — gated runner so the SSE subscription is attached BEFORE any
+    # event is emitted. Under multicast fan-out (plan.md D16, no replay),
+    # a subscriber that opens after an event has been broadcast cannot see
+    # that event.
+    #
+    # Why the background thread: Starlette's ``TestClient.stream()`` blocks
+    # its ``__enter__`` until the server yields the first byte. If the
+    # runner is gated by a threading.Event the test thread needs to set,
+    # it'll deadlock — ``stream()`` won't return so the test never reaches
+    # ``event.set()``. Instead we spawn a waiter thread that polls the
+    # JobManager's subscriber list and trips the gate once the SSE route's
+    # ``subscribe()`` has registered its queue.
+    start_emitting = threading.Event()
+
+    def runner(
+        *,
+        job_id: str,
+        input_path: Path,
+        output_path: Path,
+        source_lang: str,
+        target_lang: str,
+        emit: Callable[[SSEEvent], None],
+    ) -> None:
+        if not start_emitting.wait(timeout=5):
+            raise AssertionError("SSE subscriber never attached")
+        t0 = time.time()
+        emit(StageStartEvent(stage="s1", ts=t0))
+        emit(StageCompleteEvent(stage="s1", duration_ms=1.0, ts=t0))
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"FAKE MP4 BYTES")
+        emit(
+            DoneEvent(
+                output_url=f"/api/jobs/{job_id}/output", ts=time.time()
+            )
+        )
+
+    app = _make_app(runner)
 
     # Act
     with TestClient(app) as client:
         job_id = _post_job(client).json()["job_id"]
-        # Drain to terminal first so all events are already queued.
-        _wait_for_status(client, job_id, terminal={"succeeded"})
 
-        with client.stream("GET", f"/api/jobs/{job_id}/events") as resp:
-            frames = _parse_sse_stream(resp)
+        def _release_when_subscribed() -> None:
+            """Poll the manager for a subscriber, then flip the gate.
+
+            We peek at ``app.state.job_manager._jobs[job_id]._subscribers``
+            (white-box) because that's the exact invariant we need: the
+            route's SSE handler has called ``subscribe()`` and appended
+            its per-subscriber queue, so the runner's subsequent
+            ``emit()`` broadcasts will reach it.
+            """
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                mgr = app.state.job_manager
+                record = mgr._jobs.get(job_id)
+                if record is not None and record._subscribers:
+                    start_emitting.set()
+                    return
+                time.sleep(0.005)
+
+        waiter = threading.Thread(target=_release_when_subscribed, daemon=True)
+        waiter.start()
+        try:
+            with client.stream("GET", f"/api/jobs/{job_id}/events") as resp:
+                frames = _parse_sse_stream(resp)
+        finally:
+            start_emitting.set()  # belt-and-braces so runner never deadlocks
+            waiter.join(timeout=2)
 
     # Assert — we see at least one of each expected event kind
     types_seen = {f["event"] for f in frames if "event" in f}
