@@ -188,7 +188,12 @@ The five file-slot / submit-slot variants (idle, uploading, rejoin, running/succ
 
 ## Progress
 
-- [ ] **Step 1 — Design tokens + fonts + theme swap.** Port `tokens.css` verbatim into `globals.css`; map shadcn semantic vars onto slate tokens; delete `.dark` block. Add fonts to `index.html`. Extend Tailwind config with font families. **Goal: the existing UploadForm/JobView still renders, but in the new slate-dark palette.** No layout changes yet. Verify all four shadcn primitive variants read correctly (R3).
+- [x] **Step 1 — Design tokens + fonts + theme swap.** Port `tokens.css` verbatim into `globals.css`; map shadcn semantic vars onto slate tokens; delete `.dark` block. Add fonts to `index.html`. Extend Tailwind config with font families. **Goal: the existing UploadForm/JobView still renders, but in the new slate-dark palette.** No layout changes yet. Verify all four shadcn primitive variants read correctly (R3).
+  - Trap caught: shadcn's Tailwind config wrapped color vars as `hsl(var(--foo))`, but slate tokens are hex / rgba. Fix: drop the `hsl(...)` wrapper in `tailwind.config.ts`.
+  - `body { font-family: var(--ff-sans); }` added so Inter applies globally without opt-in.
+  - `prefers-reduced-motion` block placed outside `@layer base` (plain CSS) so `!important` beats Tailwind animation utilities.
+  - R3 still open — no display on dev box; four shadcn primitive variants (Button / Alert / Card / Badge) type-check + test-green but need human visual sign-off next session, especially `destructive-foreground` contrast on `--err` and `ring` visibility at 35% opacity.
+  - `npm run type-check` / `npm run lint` / `npm run test` (60/60) all green.
 - [ ] **Step 2 — `createJob` on XHR with `onProgress`.** Rewrite to XMLHttpRequest; add `UploadProgress` type to `schemas.ts`; add `AbortSignal` support. Tests with a mock XHR. No consumer wiring yet.
 - [ ] **Step 3 — `useJobStream` active-stage tick.** Add `activeStageElapsedMs` driven by `setInterval(1000)`. Update existing tests with fake timers. No consumer UI change.
 - [ ] **Step 4 — `<AppShell>` + `<DesktopRequired>`.** Build the fixed 1080×760 two-column frame with slot props for left + right. Viewport breakpoint card. Tests: it renders slot children; it shows the desktop-required card below 1080.
