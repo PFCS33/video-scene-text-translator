@@ -18,7 +18,7 @@
  *   8. onStatusSync merges current_stage from a re-sync JobStatus
  */
 
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
 
 import type { JobStatus, SSEEvent } from "@/api/schemas";
@@ -86,6 +86,7 @@ describe("useJobStream", () => {
     expect(result.current.state.outputUrl).toBeNull();
     expect(result.current.state.error).toBeNull();
     expect(result.current.state.logs).toEqual([]);
+    expect(result.current.state.activeStageElapsedMs).toBe(0);
     expect(result.current.state.stages).toEqual({
       s1: "pending",
       s2: "pending",
@@ -316,5 +317,187 @@ describe("useJobStream", () => {
     // Still "connecting", not "running", because no stage has started yet.
     expect(result.current.state.status).toBe("connecting");
     expect(result.current.state.currentStage).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Active-stage elapsed ticker (D8).
+//
+// Covers: start-on-stage_start, clear-on-stage_complete, restart on next
+// stage_start, clear-on-done, clear-on-error, cleanup-on-unmount.
+// Uses integer-second granularity — the interval updates once per second so
+// consumers rendering `Math.floor(ms/1000)` don't burn render cycles on
+// sub-second ticks that produce the same visible output.
+// ---------------------------------------------------------------------------
+
+describe("useJobStream — active-stage tick", () => {
+  beforeEach(() => {
+    // `shouldAdvanceTime` lets microtask-adjacent helpers (e.g. @testing-library's
+    // `waitFor` polling) make progress without us manually advancing timers
+    // for every promise flush.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("starts a 1s ticker on stage_start and exposes integer-second elapsed", async () => {
+    const { result } = renderHook(() => useJobStream("job-1"));
+    await waitFor(() => expect(capturedOptions).not.toBeNull());
+
+    act(() => {
+      capturedOptions!.onEvent({
+        type: "stage_start",
+        stage: "s1",
+        ts: 1,
+      });
+    });
+    // At t=0 the elapsed is 0.
+    expect(result.current.state.activeStageElapsedMs).toBe(0);
+
+    // Advance 3500ms — we expect three whole-second ticks to have fired.
+    act(() => {
+      vi.advanceTimersByTime(3500);
+    });
+
+    expect(result.current.state.activeStageElapsedMs).toBe(3000);
+  });
+
+  it("clears the ticker on stage_complete and resets elapsed to 0", async () => {
+    const { result } = renderHook(() => useJobStream("job-1"));
+    await waitFor(() => expect(capturedOptions).not.toBeNull());
+
+    act(() => {
+      capturedOptions!.onEvent({ type: "stage_start", stage: "s1", ts: 1 });
+    });
+    act(() => {
+      vi.advanceTimersByTime(2500);
+    });
+    expect(result.current.state.activeStageElapsedMs).toBe(2000);
+
+    act(() => {
+      capturedOptions!.onEvent({
+        type: "stage_complete",
+        stage: "s1",
+        duration_ms: 2500,
+        ts: 2,
+      });
+    });
+    expect(result.current.state.activeStageElapsedMs).toBe(0);
+
+    // After clear, advancing time does not change elapsed.
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(result.current.state.activeStageElapsedMs).toBe(0);
+  });
+
+  it("restarts the ticker on the next stage_start", async () => {
+    const { result } = renderHook(() => useJobStream("job-1"));
+    await waitFor(() => expect(capturedOptions).not.toBeNull());
+
+    act(() => {
+      capturedOptions!.onEvent({ type: "stage_start", stage: "s1", ts: 1 });
+    });
+    act(() => {
+      vi.advanceTimersByTime(4000);
+    });
+    act(() => {
+      capturedOptions!.onEvent({
+        type: "stage_complete",
+        stage: "s1",
+        duration_ms: 4000,
+        ts: 2,
+      });
+    });
+    act(() => {
+      capturedOptions!.onEvent({ type: "stage_start", stage: "s2", ts: 3 });
+    });
+
+    expect(result.current.state.activeStageElapsedMs).toBe(0);
+
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+    expect(result.current.state.activeStageElapsedMs).toBe(1000);
+  });
+
+  it("clears the ticker on done", async () => {
+    const { result } = renderHook(() => useJobStream("job-1"));
+    await waitFor(() => expect(capturedOptions).not.toBeNull());
+
+    act(() => {
+      capturedOptions!.onEvent({ type: "stage_start", stage: "s5", ts: 1 });
+    });
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+
+    act(() => {
+      capturedOptions!.onEvent({
+        type: "done",
+        output_url: "/api/jobs/job-1/output",
+        ts: 99,
+      });
+    });
+    expect(result.current.state.activeStageElapsedMs).toBe(0);
+
+    // Ticker is cleared — no further updates.
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(result.current.state.activeStageElapsedMs).toBe(0);
+  });
+
+  it("clears the ticker on error", async () => {
+    const { result } = renderHook(() => useJobStream("job-1"));
+    await waitFor(() => expect(capturedOptions).not.toBeNull());
+
+    act(() => {
+      capturedOptions!.onEvent({ type: "stage_start", stage: "s3", ts: 1 });
+    });
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+
+    act(() => {
+      capturedOptions!.onEvent({
+        type: "error",
+        message: "boom",
+        ts: 7,
+      });
+    });
+    expect(result.current.state.activeStageElapsedMs).toBe(0);
+
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(result.current.state.activeStageElapsedMs).toBe(0);
+  });
+
+  it("clears the ticker on unmount (no orphan interval leak)", async () => {
+    const { unmount } = renderHook(() => useJobStream("job-1"));
+    await waitFor(() => expect(capturedOptions).not.toBeNull());
+
+    act(() => {
+      capturedOptions!.onEvent({ type: "stage_start", stage: "s1", ts: 1 });
+    });
+
+    // Sanity check: at least one active timer while the ticker runs.
+    // (vi.getTimerCount includes any other microtask-scheduled timers, so
+    // we assert at-least-one rather than exact-one.)
+    expect(vi.getTimerCount()).toBeGreaterThanOrEqual(1);
+
+    unmount();
+
+    // After unmount, the ticker interval must be cleared — no lingering
+    // interval keeps the fake-timer queue hot. Other timers (microtasks)
+    // may still be queued, but the ticker itself must be gone, so
+    // advancing time must not trigger a setState-after-unmount warning.
+    act(() => {
+      vi.advanceTimersByTime(5000);
+    });
+    // No assertion failure means no late setState happened during advance.
   });
 });

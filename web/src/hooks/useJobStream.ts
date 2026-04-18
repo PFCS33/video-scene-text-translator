@@ -65,6 +65,18 @@ export interface JobStreamState {
   error: { message: string; traceback?: string | null } | null;
   outputUrl: string | null;
   currentStage: Stage | null;
+  /**
+   * Elapsed time spent in the currently-active stage, in milliseconds,
+   * floored to whole seconds. 0 when no stage is active.
+   *
+   * Driven by a `setInterval(1000)` bound to the latest `stage_start.ts`
+   * (or, on a page-reload rejoin, to the time the SPA learned a stage was
+   * in-flight — the server doesn't hand us the original start timestamp in
+   * `/status`, so rejoin elapsed is "since this page loaded", not "since
+   * the stage started"). The interval is cleared on stage_complete, done,
+   * error, and unmount. See plan.md D8.
+   */
+  activeStageElapsedMs: number;
 }
 
 export interface UseJobStreamResult {
@@ -95,6 +107,7 @@ function initialState(): JobStreamState {
     error: null,
     outputUrl: null,
     currentStage: null,
+    activeStageElapsedMs: 0,
   };
 }
 
@@ -157,126 +170,228 @@ export function useJobStream(jobId: string | null): UseJobStreamResult {
   const streamRef = useRef<EventStream | null>(null);
   // Stops late setState calls after unmount or jobId change.
   const activeJobRef = useRef<string | null>(null);
+  // ------------------------------------------------------------------
+  // Active-stage ticker refs (D8).
+  //
+  //   `intervalRef` holds the handle returned by `window.setInterval`
+  //   so we can clear it on stage change, terminal events, and unmount.
+  //   `stageStartMsRef` holds the wall-clock ms at which the current
+  //   stage began. Kept in a ref (not state) because the whole point of
+  //   the ticker is to own the cheap per-second state update — we don't
+  //   want an extra render every time a stage starts just to record the
+  //   baseline.
+  // ------------------------------------------------------------------
+  const intervalRef = useRef<number | null>(null);
+  const stageStartMsRef = useRef<number | null>(null);
+
+  const clearTicker = useCallback(() => {
+    if (intervalRef.current !== null) {
+      window.clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    stageStartMsRef.current = null;
+  }, []);
+
+  const startTicker = useCallback(
+    (startMs: number) => {
+      // Always clear before starting so overlapping stage_start events
+      // (or a status-sync racing a stage_start) never leak an interval.
+      clearTicker();
+      stageStartMsRef.current = startMs;
+      // Kick off at 0 immediately — `startTicker` is called from event
+      // handlers that also set `activeStageElapsedMs` in the same
+      // setState, so we don't need a separate setState here. The
+      // interval then takes over on the next 1s boundary.
+      intervalRef.current = window.setInterval(() => {
+        const baseline = stageStartMsRef.current;
+        if (baseline === null) return;
+        // Integer-second resolution: consumers render `Math.floor(ms/1000)`
+        // anyway, so updating state at sub-second granularity would burn
+        // renders without changing the output.
+        const elapsed = Math.floor((Date.now() - baseline) / 1000) * 1000;
+        setState((prev) =>
+          prev.activeStageElapsedMs === elapsed
+            ? prev
+            : { ...prev, activeStageElapsedMs: elapsed },
+        );
+      }, 1000);
+    },
+    [clearTicker],
+  );
 
   const reset = useCallback(() => {
+    clearTicker();
     setState(initialState());
-  }, []);
+  }, [clearTicker]);
 
   // -------------------------------------------------------------------------
   // Event handler — closed over setState, so we can declare once and reuse
   // across seed + stream callbacks without recreating per render.
   // -------------------------------------------------------------------------
-  const applyEvent = useCallback((ev: SSEEvent) => {
-    setState((prev) => {
+  const applyEvent = useCallback(
+    (ev: SSEEvent) => {
+      setState((prev) => {
+        switch (ev.type) {
+          case "stage_start":
+            return {
+              ...prev,
+              status: prev.status === "connecting" ? "running" : prev.status,
+              stages: withStageMarked(prev.stages, ev.stage, "active"),
+              currentStage: ev.stage,
+              // Reset the elapsed readout in the same commit as the stage
+              // flip so the UI never shows the previous stage's time on
+              // the new stage's tile.
+              activeStageElapsedMs: 0,
+            };
+          case "stage_complete":
+            return {
+              ...prev,
+              status: prev.status === "connecting" ? "running" : prev.status,
+              stages: withStageMarked(prev.stages, ev.stage, "done"),
+              stageDurations: {
+                ...prev.stageDurations,
+                [ev.stage]: ev.duration_ms,
+              },
+              currentStage:
+                prev.currentStage === ev.stage ? null : prev.currentStage,
+              activeStageElapsedMs:
+                prev.currentStage === ev.stage ? 0 : prev.activeStageElapsedMs,
+            };
+          case "log": {
+            const entry: LogEntry = {
+              level: ev.level,
+              message: ev.message,
+              ts: ev.ts,
+            };
+            const nextLogs =
+              prev.logs.length >= LOG_CAP
+                ? [...prev.logs.slice(prev.logs.length - LOG_CAP + 1), entry]
+                : [...prev.logs, entry];
+            return { ...prev, logs: nextLogs };
+          }
+          case "done":
+            return {
+              ...prev,
+              status: "succeeded",
+              stages: allDoneStages(),
+              outputUrl: ev.output_url,
+              currentStage: null,
+              activeStageElapsedMs: 0,
+            };
+          case "error":
+            return {
+              ...prev,
+              status: "failed",
+              error: {
+                message: ev.message,
+                traceback: ev.traceback ?? null,
+              },
+              currentStage: null,
+              activeStageElapsedMs: 0,
+            };
+          default:
+            return prev;
+        }
+      });
+
+      // Ticker side-effects — run *after* setState so the render order
+      // is: state-update first, then interval bookkeeping. We bind to
+      // `Date.now()` rather than `ev.ts * 1000` to avoid server/client
+      // clock-skew ever producing a negative elapsed value. The tiny
+      // network + parse delay between `stage_start` being emitted and
+      // received is acceptable (sub-second in practice).
       switch (ev.type) {
         case "stage_start":
-          return {
-            ...prev,
-            status: prev.status === "connecting" ? "running" : prev.status,
-            stages: withStageMarked(prev.stages, ev.stage, "active"),
-            currentStage: ev.stage,
-          };
+          startTicker(Date.now());
+          break;
         case "stage_complete":
-          return {
-            ...prev,
-            status: prev.status === "connecting" ? "running" : prev.status,
-            stages: withStageMarked(prev.stages, ev.stage, "done"),
-            stageDurations: {
-              ...prev.stageDurations,
-              [ev.stage]: ev.duration_ms,
-            },
-            currentStage:
-              prev.currentStage === ev.stage ? null : prev.currentStage,
-          };
-        case "log": {
-          const entry: LogEntry = {
-            level: ev.level,
-            message: ev.message,
-            ts: ev.ts,
-          };
-          const nextLogs =
-            prev.logs.length >= LOG_CAP
-              ? [...prev.logs.slice(prev.logs.length - LOG_CAP + 1), entry]
-              : [...prev.logs, entry];
-          return { ...prev, logs: nextLogs };
-        }
         case "done":
+        case "error":
+          clearTicker();
+          break;
+        default:
+          break;
+      }
+
+      // Close the stream on terminal events so we don't keep a dead socket
+      // around. Matches the server, which finishes the SSE response after
+      // emitting done/error.
+      if (ev.type === "done" || ev.type === "error") {
+        streamRef.current?.close();
+        streamRef.current = null;
+      }
+    },
+    [startTicker, clearTicker],
+  );
+
+  const applyStatusSync = useCallback(
+    (status: JobStatus) => {
+      setState((prev) => {
+        if (status.status === "succeeded") {
+          // If the `done` event arrived during the SSE reconnect gap, this is
+          // the only place the client learns the job is finished — so we
+          // must also populate `outputUrl` here, not just on the SSE `done`
+          // event path. Without this the download button never appears.
           return {
             ...prev,
             status: "succeeded",
             stages: allDoneStages(),
-            outputUrl: ev.output_url,
+            outputUrl: prev.outputUrl ?? outputUrl(status.job_id),
             currentStage: null,
+            activeStageElapsedMs: 0,
           };
-        case "error":
+        }
+        if (status.status === "failed") {
           return {
             ...prev,
             status: "failed",
-            error: {
-              message: ev.message,
-              traceback: ev.traceback ?? null,
+            error: prev.error ?? {
+              message: status.error ?? "Pipeline failed",
+              traceback: null,
             },
             currentStage: null,
+            activeStageElapsedMs: 0,
           };
-        default:
-          return prev;
-      }
-    });
+        }
+        if (status.current_stage) {
+          return {
+            ...prev,
+            status: "running",
+            stages: withStageMarked(prev.stages, status.current_stage, "active"),
+            currentStage: status.current_stage,
+          };
+        }
+        return prev;
+      });
 
-    // Close the stream on terminal events so we don't keep a dead socket
-    // around. Matches the server, which finishes the SSE response after
-    // emitting done/error.
-    if (ev.type === "done" || ev.type === "error") {
-      streamRef.current?.close();
-      streamRef.current = null;
-    }
-  }, []);
-
-  const applyStatusSync = useCallback((status: JobStatus) => {
-    setState((prev) => {
-      if (status.status === "succeeded") {
-        // If the `done` event arrived during the SSE reconnect gap, this is
-        // the only place the client learns the job is finished — so we
-        // must also populate `outputUrl` here, not just on the SSE `done`
-        // event path. Without this the download button never appears.
-        return {
-          ...prev,
-          status: "succeeded",
-          stages: allDoneStages(),
-          outputUrl: prev.outputUrl ?? outputUrl(status.job_id),
-          currentStage: null,
-        };
+      // Ticker side-effects for status syncs.
+      //
+      // Terminal: clear — the stream is about to close anyway, and a
+      // lingering interval would keep firing setState with stale elapsed.
+      //
+      // Active stage but no ticker yet: fallback-seed with `Date.now()`.
+      // We don't have the original `stage_start.ts` (see D8 option A —
+      // `/status` doesn't carry it), so a reload-rejoin shows "elapsed
+      // since this page loaded" rather than "elapsed since the stage
+      // started". Acceptable UX tradeoff for an edge case.
+      //
+      // Active stage with ticker already running: leave it alone — the
+      // authoritative start time is the one captured from the SSE
+      // `stage_start` event, and overwriting it here would reset the
+      // displayed elapsed every time the SSE stream reconnects.
+      if (status.status === "succeeded" || status.status === "failed") {
+        clearTicker();
+        // Server-side SSE generator has already finished, so keeping the
+        // stream around produces a noisy reconnect loop (server closes,
+        // browser reconnects, repeat). Close our end to break the cycle.
+        streamRef.current?.close();
+        streamRef.current = null;
+      } else if (status.current_stage && intervalRef.current === null) {
+        startTicker(Date.now());
       }
-      if (status.status === "failed") {
-        return {
-          ...prev,
-          status: "failed",
-          error: prev.error ?? {
-            message: status.error ?? "Pipeline failed",
-            traceback: null,
-          },
-          currentStage: null,
-        };
-      }
-      if (status.current_stage) {
-        return {
-          ...prev,
-          status: "running",
-          stages: withStageMarked(prev.stages, status.current_stage, "active"),
-          currentStage: status.current_stage,
-        };
-      }
-      return prev;
-    });
-    // If the resync landed on a terminal status, the server-side SSE
-    // generator has already finished, so keep the stream around produces
-    // a noisy reconnect loop (server closes, browser reconnects, repeat).
-    // Close our end to break the cycle.
-    if (status.status === "succeeded" || status.status === "failed") {
-      streamRef.current?.close();
-      streamRef.current = null;
-    }
-  }, []);
+    },
+    [startTicker, clearTicker],
+  );
 
   useEffect(() => {
     if (!jobId) {
@@ -288,6 +403,9 @@ export function useJobStream(jobId: string | null): UseJobStreamResult {
     // explicitly, but binding to the effect means a direct <JobView key>
     // swap also does the right thing.
     setState(initialState());
+    // Any ticker from a previous jobId dies with the job. The new job
+    // will start its own on the first stage_start or status-sync.
+    clearTicker();
 
     // Seed from /status so a page-reload rejoin shows the current stage
     // immediately instead of waiting for the next stage_start.
@@ -350,8 +468,11 @@ export function useJobStream(jobId: string | null): UseJobStreamResult {
       activeJobRef.current = null;
       stream.close();
       streamRef.current = null;
+      // Clear the ticker on unmount / jobId change so we never leave an
+      // orphan `setInterval` calling setState on an unmounted hook.
+      clearTicker();
     };
-  }, [jobId, applyEvent, applyStatusSync]);
+  }, [jobId, applyEvent, applyStatusSync, clearTicker]);
 
   return { state, reset };
 }

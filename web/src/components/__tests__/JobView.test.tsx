@@ -49,6 +49,7 @@ function makeState(
     error: null,
     outputUrl: null,
     currentStage: "s1",
+    activeStageElapsedMs: 0,
     ...overrides,
   };
 }
