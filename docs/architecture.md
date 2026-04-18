@@ -150,11 +150,111 @@ one worker thread.
   schemas (`app/schemas.py`), curated language list
   (`app/languages.py`). Tests in `server/tests/`. Nested conventions
   doc at `server/CLAUDE.md`.
-- `web/` — React 18 + Vite + TS SPA. Components in `src/components/`
-  (shadcn primitives under `components/ui/`), API client + SSE helper
-  in `src/api/`, job-lifecycle hook in `src/hooks/useJobStream.ts`,
-  design tokens in `src/styles/globals.css`. Nested conventions doc at
-  `web/CLAUDE.md`.
+- `web/` — React 18 + Vite + TS SPA with a fixed 1080×760 two-column
+  layout driven by a state machine in `App.tsx`. Nested conventions
+  doc at `web/CLAUDE.md`.
+
+### Frontend architecture
+
+`<App>` is the single state-machine owner. It holds a `useReducer<UiState>`
+with four discriminated phases — the old `<UploadForm>` / `<JobView>`
+toggle was collapsed in the UI redesign:
+
+```
+UiState =
+  | { phase: "idle";      file, source, target, submitError? }
+  | { phase: "uploading"; file, source, target, progress }
+  | { phase: "rejoin";    file, source, target, blockingJobId, blockingStatus? }
+  | { phase: "active";    jobId, file, source, target }
+```
+
+Transitions (dispatch-only; no imperative state pokes):
+- `idle → uploading` on submit; XHR starts.
+- `uploading → active` on XHR 201 (`uploadSucceeded`).
+- `uploading → rejoin` on XHR 409 (`uploadBlocked`, blockingJobId from
+  `ApiError.concurrentJobDetail`).
+- `uploading → idle` on XHR 4xx / network error (`uploadFailed`,
+  re-renders with a `SubmitError`).
+- `rejoin → active` on Rejoin click (file cleared — someone else's job).
+- `active (terminal) → idle` on Submit-another / Delete-job.
+
+Component tree while `phase !== "active"`:
+
+```
+<App>
+└── <AppShell left={...} right={...}>       (fixed 1080×760 frame;
+    ├── <LeftColumn>                         renders <DesktopRequired>
+    │   ├── <IdentityBlock>                  below 1080 px viewport)
+    │   ├── {fileSlot}    — Dropzone | VideoCard
+    │   ├── <LanguagePair> — native <select> × 2 + swap ↕
+    │   └── {submitSlot}  — SubmitBar(idle|uploading|running|terminal)
+    └── right column surfaces:
+        ├── <StatusBand>
+        └── one of: <IdlePlaceholder>, <UploadProgress>, <RejoinCard>
+```
+
+While `phase === "active"`, `<App>` delegates to a nested `<ActiveView>`
+that instantiates `useJobStream(jobId)` exactly once. The hook state is
+threaded into both columns, guaranteeing a single SSE subscription per
+job:
+
+```
+<App> (phase === "active")
+└── <ActiveView> — owns useJobStream(jobId)
+    └── <AppShell>
+        ├── <LeftColumn>            (file slot locked; LanguagePair locked;
+        │                            SubmitBar = running until terminal)
+        └── right column:
+            ├── <StatusBand kind={connecting|running|succeeded|failed}>
+            ├── <StageProgress>     (5 tiles + elapsed row; reads
+            │                        activeStageElapsedMs from the hook)
+            ├── <LogPanel>          (mono list + severity chip)
+            ├── <ResultPanel>       (succeeded only — <video> + Download)
+            └── <FailureCard>       (failed only — replaces old ErrorAlert)
+```
+
+Component inventory, grouped by area:
+- **Shell**: `AppShell`, `DesktopRequired`.
+- **Left column**: `left/LeftColumn`, `left/IdentityBlock`,
+  `left/VideoCard`, `left/LanguagePair`, `left/SubmitBar`.
+- **Right column**: `right/StatusBand`, `right/IdlePlaceholder`,
+  `right/UploadProgress`, `right/RejoinCard`, `right/FailureCard`.
+- **Primitives (shared across phases)**: `Dropzone`, `LanguageSelect`
+  (native `<select>`; Radix was dropped here), `StageProgress`,
+  `LogPanel`, `ResultPanel`. shadcn primitives (`Button`, `Card`,
+  `Alert`, `Badge`, `Input`, `Label`) under `components/ui/`.
+- **Hooks**: `useJobStream` in `src/hooks/`.
+- **API**: `api/client.ts` (fetch + XHR), `api/sse.ts` (EventSource
+  wrapper with auto-resync), `api/schemas.ts` (TS mirror of
+  `server/app/schemas.py`).
+
+### Upload progress (XHR)
+`createJob(file, source, target, { onProgress?, signal? })` uses
+XMLHttpRequest rather than `fetch` so the uploading phase can surface
+real `%` / `MB/s` / ETA. The XHR `progress` event feeds an
+`UploadProgress` snapshot into the reducer (`uploadProgress` action);
+`<UploadProgress>` on the right renders the bar + bytes + rate. An
+`AbortController` cancels the XHR on unmount (no user-facing cancel
+button — deferred). All non-upload helpers (`getHealth`, `getLanguages`,
+`getJobStatus`, `deleteJob`) stay on `fetch`.
+
+### SSE + active-stage tick
+`useJobStream` seeds from `GET /status` (so a page-reload rejoin reveals
+the current stage immediately), subscribes to SSE via `openEventStream`,
+and folds each event into a reducer-style state. It additionally emits
+an `activeStageElapsedMs` value driven by a `setInterval(1000)` bound to
+the current `stage_start.ts`. The interval is cleared on stage change,
+terminal event, and unmount. `StageProgress` reads the tick to render
+the active tile's "32s" readout.
+
+### 409 rejoin branch
+When `createJob` rejects with `ApiError.status === 409`, `App.tsx`
+reads `err.concurrentJobDetail.active_job_id` and dispatches
+`uploadBlocked`. A `useEffect` on the rejoin phase then calls
+`getJobStatus(blockingJobId)` and dispatches `blockingStatusLoaded` —
+non-fatal, the card falls back to generic copy if the fetch fails.
+`<RejoinCard>` renders the fetched metadata (current stage, started-at)
+and a Rejoin CTA that transitions to `active` with `file === null`.
 
 ### API surface
 
