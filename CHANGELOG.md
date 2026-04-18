@@ -1,5 +1,54 @@
 # Changelog
 
+## 2026-04-18 — Hi-SAM Segmentation-Based Inpainter (feat/text_seg)
+
+### New S4 Inpainter Backend
+- Add `SegmentationBasedInpainter` — a second `BaseBackgroundInpainter` implementation that uses Hi-SAM for pixel-level text stroke segmentation, then fills the masked pixels with `cv2.inpaint` (Navier-Stokes by default, Fast Marching/Telea optional)
+- Selected via `propagation.inpainter_backend: "hisam"` alongside the existing `"srnet"` and `"none"`
+- Same BGR-uint8 in / BGR-uint8 out contract as `SRNetInpainter` — downstream LCM ratio-map code is unchanged
+- Hi-SAM inference runs entirely inside the main `.venv` — zero new pip installs (torch, torchvision, einops, shapely, pyclipper, scikit-image, scipy, matplotlib, pillow, tqdm, opencv, numpy all already present)
+
+### HiSAMSegmenter Wrapper
+- `code/src/stages/s4_propagation/hisam_segmenter.py` (258 lines) wraps Hi-SAM's `SamPredictor` behind a clean `segment(bgr_roi) -> uint8 H×W {0, 255} mask` API
+- Supports single-pass and sliding-window (`use_patch_mode`) inference via `_patchify_sliding` / `_unpatchify_sliding` helpers copied verbatim from upstream `demo_hisam.py` (avoids depending on that script as an importable module)
+- `load_model()` uses `contextlib.chdir(third_party/Hi-SAM)` + `sys.path.insert` to work around Hi-SAM's `build.py` hardcoding a relative path to the SAM ViT encoder weights. The chdir is exception-safe (restores cwd on error) and scoped to construction only — cwd is unchanged by the time `segment()` is called
+- Thread-safety caveat documented in the `load_model()` docstring: single-threaded only, since `chdir` mutates process-global state
+
+### S3 Adaptive-Mask Inpainter Wiring
+- `TextEditingStage._get_inpainter()` now dispatches `"hisam"` to `SegmentationBasedInpainter` in addition to the existing `"srnet"` branch. Before this fix, setting `inpainter_backend: "hisam"` silently disabled AnyText2's adaptive-mask flow (S3 only knew about `"srnet"`) and produced the long-to-short gibberish-fill regression
+- Graceful fallback semantics match the `"srnet"` branch: missing checkpoint → warn + return None → AnyText2 falls back to non-adaptive mask
+
+### S5 Pre-Composite Inpainter
+- `RevertStage._get_pre_inpainter()` now dispatches on `revert.pre_inpaint_backend` (new field) accepting `"srnet"` or `"hisam"`
+- Four dedicated `revert.pre_inpaint_hisam_*` fields (model_type, mask_dilation_px, inpaint_method, use_patch_mode) — kept independent from `propagation.hisam_*` so S4 and S5 can be tuned separately (e.g. aggressive dilation in S5 to scrub boundary leakage without widening S4's LCM-ratio inpaint). Mirrors the existing separation of `pre_inpaint_checkpoint` / `pre_inpaint_device` from propagation's equivalents
+- Unknown-backend raises `ValueError` (vs S3's warn-and-skip): S5's pre-inpaint is an explicit opt-in via `pre_inpaint=true`, so misconfiguration should fail loudly
+
+### Configuration
+- Add four knobs to `PropagationConfig` (only used when `inpainter_backend: "hisam"`): `hisam_model_type` (default `"vit_l"`), `hisam_mask_dilation_px` (3), `hisam_inpaint_method` (`"ns"` or `"telea"`), `hisam_use_patch_mode` (false)
+- Add five knobs to `RevertConfig`: `pre_inpaint_backend` (default `"srnet"` for back-compat), plus four `pre_inpaint_hisam_*` fields matching the propagation shape
+- `adv.yaml` documents both backends with commented-out swap lines and example Hi-SAM checkpoint paths — flip one line to try Hi-SAM at either stage
+
+### Installation
+- Add `third_party/install_hisam.sh` mirroring `install_srnet.sh`: idempotent clone of the project's forked Hi-SAM repo plus idempotent downloads of the SAM ViT-L encoder weights (`wget` from Meta) and the SAM-TS-L TextSeg head (`gdown` from Google Drive)
+- Both checkpoints land in `third_party/Hi-SAM/pretrained_checkpoint/` (Hi-SAM's expected directory)
+
+### Review Fixes
+- Converted 3 production-path `assert` statements to explicit `ValueError` / `RuntimeError` with actionable messages (survive `-O`, match SRNetInpainter's guard style)
+- Added a NOTE comment in the smoke script clarifying that Hi-SAM inference runs twice per ROI (once for mask viz, once inside `inpaint()`) — don't time throughput from the script
+
+### Testing
+- 15 unit tests for `SegmentationBasedInpainter`: shape/dtype contract, dilation behavior, inpaint-method flag dispatch, input validation, lazy segmenter construction, config-field forwarding
+- 7 unit tests for `HiSAMSegmenter`: lazy vs eager load, `load_model()` idempotency, cwd-restored guarantee, `segment()` precondition, binary-mask shape/dtype/values (both single-pass and patch modes) — CPU-safe via `monkeypatch.setitem(sys.modules, ...)` injection of fake `hi_sam.modeling.*` modules
+- 5 wiring tests for `PropagationStage._get_inpainter()`: construction with all Hi-SAM kwargs, no-checkpoint graceful fallback, lazy init, caching across calls, unknown-backend raises with all three valid values listed
+- 2 S3 regression tests for the AnyText2 adaptive-mask wiring: hisam-backend forwarding, hisam-missing-checkpoint graceful fallback
+- 4 S5 pre-inpaint dispatch tests: srnet dispatch, hisam dispatch with full kwarg forwarding, unknown-backend `ValueError`, caching across calls
+- 427 total tests passing (baseline 401 + 15 seg inpainter + 7 hisam segmenter + 5 S4 wiring + 2 S3 + 4 S5 pre-inpaint - ℘overlaps counted once)
+
+### Misc
+- `code/scripts/smoke_test_hisam_inpainter.py` for visual validation — runs Hi-SAM + cv2.inpaint on a set of canonical ROIs and writes 4-panel `(original | mask | inpainted | diff×3)` PNGs
+- Live GPU smoke on 5 real ROIs from `test_output/roi_extraction_2/` (SAMSUNG, NORMAL, PERM PRESS, HEAVY DUTY, SHIRTS tracks) — inpainted output is flat, halo-free at default `mask_dilation_px=3`
+- Update `docs/architecture.md`: expanded `s4_propagation/` module-map entry to list both inpainter backends; added Hi-SAM paragraph to Cross-Cutting Concerns covering vendored location, zero-new-pip-install story, and the chdir workaround
+
 ## 2026-04-10 — AnyText2 Adaptive Mask Sizing (fix/anytext2-adaptive-mask)
 
 ### Adaptive Mask for Long→Short Translations
