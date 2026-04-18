@@ -10,6 +10,13 @@
  *   - Python `ErrorEvent`-> TS `ErrorEventPayload` (DOM `ErrorEvent` exists)
  * The discriminator lives on the shared `type` string field, so consumers
  * narrow the union via `switch (ev.type)` without touching the class names.
+ *
+ * Type mapping quirks (not drift — intentional):
+ *   - Python `float` (e.g. `duration_ms`, `ts`, `created_at`) -> TS `number`.
+ *     JS has no int/float distinction; `number` covers both cleanly.
+ *   - Python `Optional[T]` / `T | None` -> TS `T | null` (JSON null, not
+ *     `undefined`). Fields are still declared optional with `?:` where the
+ *     server omits them entirely vs. emits `null`.
  */
 
 // ---------------------------------------------------------------------------
