@@ -688,7 +688,7 @@ def test_download_output_200_after_done(storage_root: Path):
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "video/mp4"
     assert "attachment" in resp.headers.get("content-disposition", "")
-    assert "out.mp4" in resp.headers["content-disposition"]
+    assert "translated.mp4" in resp.headers["content-disposition"]
     assert resp.content == b"FAKE MP4 BYTES"
 
 

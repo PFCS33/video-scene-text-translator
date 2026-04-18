@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -277,6 +278,34 @@ def _build_config(
     return config
 
 
+def _run_demo_failure(
+    fail_stage: str,
+    emit: Callable[[SSEEvent], None],
+) -> None:
+    """DEMO: mock stage-start/complete events for every stage BEFORE
+    `fail_stage`, then emit stage-start for `fail_stage` and return so the
+    caller can raise. Keeps the stage strip visually consistent with the
+    05-failed mockup (prior stages done, failing stage red, later pending).
+    """
+    stages = ["s1", "s2", "s3", "s4", "s5"]
+    idx = stages.index(fail_stage)
+    for prior in stages[:idx]:
+        t0 = time.time()
+        emit(StageStartEvent(stage=prior, ts=t0))  # type: ignore[arg-type]
+        time.sleep(0.5)
+        t1 = time.time()
+        emit(
+            StageCompleteEvent(  # type: ignore[arg-type]
+                stage=prior,
+                ts=t1,
+                duration_ms=(t1 - t0) * 1000.0,
+            )
+        )
+    emit(StageStartEvent(stage=fail_stage, ts=time.time()))  # type: ignore[arg-type]
+    # brief dwell so the fail-stage tile registers as active before the raise
+    time.sleep(0.5)
+
+
 def run_pipeline_job(
     *,
     job_id: str,
@@ -303,6 +332,21 @@ def run_pipeline_job(
     synthesize the terminal ``ErrorEvent`` atomically with the status flip
     (D16).
     """
+    # ------------------------------------------------------------------
+    # DEMO HOOK — scripted failure for UI testing. Commented out; flip
+    # the block back on + set DEMO_FAIL_STAGE=s1..s5 in the uvicorn env
+    # to fake a crash at the named stage. See _run_demo_failure below.
+    # ------------------------------------------------------------------
+    # demo_fail_stage = os.environ.get("DEMO_FAIL_STAGE", "").strip().lower()
+    # if demo_fail_stage in {"s1", "s2", "s3", "s4", "s5"}:
+    #     _run_demo_failure(demo_fail_stage, emit)
+    #     raise RuntimeError(
+    #         f"CUDA out of memory at Stage {demo_fail_stage[1:]}\n"
+    #         "Tried to allocate 2.3 GiB on a GPU that had 1.8 GiB free. "
+    #         "Another process may be holding memory, or the edit model is "
+    #         "too large for this GPU."
+    #     )
+
     # Lazy import — module-level import must stay torch-free.
     from src.pipeline import VideoPipeline  # type: ignore[import-not-found]
 

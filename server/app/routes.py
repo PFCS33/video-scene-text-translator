@@ -277,10 +277,12 @@ def download_output(
     return FileResponse(
         path=str(output_path),
         media_type="video/mp4",
-        filename="out.mp4",
+        filename="translated.mp4",
         # `FileResponse(filename=...)` already sets Content-Disposition to
-        # `attachment; filename="out.mp4"`, so we don't need to add it
-        # manually.
+        # `attachment; filename="translated.mp4"`, matching the label on
+        # the client-side download button (ResultPanel). Server-authoritative
+        # name — browsers prioritize this over the client-side `download`
+        # attribute when both are present.
     )
 
 
