@@ -54,6 +54,19 @@ class ReferenceSelector:
             )
             return text
 
+    # MyMemoryTranslator requires full locale codes (e.g. "en-GB", "es-ES")
+    # while GoogleTranslator accepts the short forms we use everywhere else.
+    # Map short → locale on fallback so the two backends stay interchangeable.
+    _MYMEMORY_LOCALE: dict[str, str] = {
+        "en": "en-GB",
+        "es": "es-ES",
+        "zh-CN": "zh-CN",
+        "fr": "fr-FR",
+        "de": "de-DE",
+        "ja": "ja-JP",
+        "ko": "ko-KR",
+    }
+
     def _translate_deep(self, text: str, src: str, tgt: str) -> str:
         """Translate using deep-translator with MyMemory fallback."""
         from deep_translator import GoogleTranslator, MyMemoryTranslator
@@ -66,7 +79,9 @@ class ReferenceSelector:
                 text,
                 exc,
             )
-            return MyMemoryTranslator(source=src, target=tgt).translate(text)
+            my_src = self._MYMEMORY_LOCALE.get(src, src)
+            my_tgt = self._MYMEMORY_LOCALE.get(tgt, tgt)
+            return MyMemoryTranslator(source=my_src, target=my_tgt).translate(text)
 
     def select_reference_frames(
         self,

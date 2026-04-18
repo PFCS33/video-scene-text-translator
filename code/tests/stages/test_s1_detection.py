@@ -311,7 +311,7 @@ class TestTranslateText:
             mock_mm.return_value.translate.return_value = "PELIGRO"
             result = stage.selector.translate_text("DANGER")
             assert result == "PELIGRO"
-            mock_mm.assert_called_once_with(source="en", target="es")
+            mock_mm.assert_called_once_with(source="en-GB", target="es-ES")
 
     def test_both_backends_fail_returns_source_text(self, default_config):
         stage = DetectionStage(default_config)
