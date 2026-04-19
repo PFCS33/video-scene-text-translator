@@ -1,5 +1,192 @@
 # Changelog
 
+## 2026-04-19 — Web Client UI Redesign (feat/web-client)
+
+### Why
+
+The MVP web client was a single centered card that toggled between
+`<UploadForm>` and `<JobView>`. The redesign trades the card for a
+fixed-position two-column dashboard shell (left: input + language +
+submit; right: phase-specific status), driven by a discriminated
+`UiState` union in `<App>` rather than a boolean active-job flag.
+Pixel vocabulary comes from `web/mockup-handoff/` (6 state screenshots
+at 1080×760 + CSS + HTML mockup). Three goals beyond the visual: real
+upload progress (not just a spinner), a live running-stage clock, and
+a proper 409 rejoin branch that fetches `/status` for the blocking
+job.
+
+### Shell
+
+- `<AppShell>` — presentational two-column frame with slot props
+  (`left`, `right`). Fluid within `max 1440×880 / min 960×620` rather
+  than the mockup's fixed 1080×760 — operator iteration on short Mac
+  screens showed the fixed size overflowed.
+- `<DesktopRequired>` fallback card when the viewport is below the
+  floor on either axis. Resize listener swaps live.
+- `h-screen overflow-hidden` on the outer wrapper so the page itself
+  never scrolls; scrolling is delegated to individual internal panels.
+
+### State machine
+
+`<App>` owns a `useReducer<UiState>` state machine with four phases:
+- `idle` — no file, or file picked but not yet submitted.
+- `uploading` — XHR in flight with live progress snapshots.
+- `rejoin` — server returned 409; parent fetches `/status` for the
+  blocking job and passes it into `<RejoinCard>`.
+- `active` — job running/succeeded/failed; delegated to a nested
+  `<ActiveView>` that instantiates `useJobStream(jobId)` exactly once
+  (so the left submit bar and the right column share one SSE
+  subscription). Active-phase's inner status (connecting / running /
+  succeeded / failed) comes from `useJobStream`.
+
+Transitions:
+- `idle → uploading` on submit (XHR opens).
+- `uploading → active` on 201.
+- `uploading → rejoin` on 409.
+- `uploading → idle` on any other error (inline alert).
+- `rejoin → active(jobId = blockingJobId, file = null)` on click.
+- `active → idle` on "Submit another" or "Delete job" success.
+
+Cmd/Ctrl+Enter submits when idle + valid. Mid-upload abort via
+`AbortController` on unmount only (no user-facing cancel).
+
+### API + hook
+
+- `createJob` moved from `fetch` to `XMLHttpRequest` (fetch has no
+  upload-progress API). New optional 4th arg `{ onProgress?, signal?
+  }` keeps the 3-arg call signature. `ApiError` + `concurrentJobDetail`
+  accessor unchanged.
+- `UploadProgress` snapshot type: `{ loaded, total, percent,
+  bytesPerSec, etaSeconds }` — last two null until ≥1s of elapsed
+  (divide-by-zero guard).
+- `useJobStream` gains `activeStageElapsedMs` + `failedStage`. Elapsed
+  ticks once per integer second from a `setInterval` bound to the
+  latest `stage_start.ts`; cleared on stage change, terminal event,
+  unmount. `failedStage` captures `prev.currentStage` in the error
+  reducer branch (before `currentStage` itself clears) so the fail-tile
+  styling actually fires on pipeline failures.
+
+### Components
+
+Phase-specific left surfaces under `web/src/components/left/`:
+`IdentityBlock`, `LanguagePair` (two selects + swap button + optional
+locked state), `LeftColumn` (stateless composite driven by `fileSlot`
+/ `languagePairSlot` / `submitSlot`), `SubmitBar` (four variants:
+idle / uploading / running / terminal), `VideoCard` (picked-file
+preview with blob URL; revoke deferred through `queueMicrotask` to
+survive React StrictMode's dev double-invoke).
+
+Phase-specific right surfaces under `web/src/components/right/`:
+`StatusBand` (eyebrow + jobId chip + progress chip + pill, with
+middle-dot separators and phase-tracked dot color), `IdlePlaceholder`
+(mockup's `.idle-icon` SVG in a circular dashed border),
+`UploadProgress` (big %, loaded/total · rate, ETA, thin accent bar,
+description), `FailureCard` (red-tinted card, details-open by
+default, Copy error with sr-only aria-live feedback), `RejoinCard`
+(yellow label strip, metadata rows, full-width rejoin CTA).
+
+Shared primitives: `Dropzone` (reskinned to mockup `.drop`),
+`LanguageSelect` (hand-rolled native `<select>` styled like
+`.lang-select` — Radix dropped), `StageProgress` (5 tiles with
+per-state styling + elapsed row: `elapsed MM:SS` running,
+`total MM:SS` succeeded, `elapsed MM:SS · crashed at Stage N of 5`
+failed), `LogPanel` (mono list, severity chip, bold stage separators
+via `/^={3,}\s*Stage\s+\d/i`, static S3 silence hint, plain
+auto-scroll — deliberately hidden in terminal phases per mockup).
+
+Extracted: `src/lib/stages.ts` (`STAGES` + `STAGE_LABEL`, shared
+between `useJobStream`, `StageProgress`, `RejoinCard`) and
+`src/lib/format.ts` (`formatBytes` base-1024 tiered, shared between
+`App` and `UploadProgress`). Both extracted after rule-of-three fired.
+
+### Design tokens + theme
+
+- Slate-dark tokens from `mockup-handoff/design/tokens.css` ported
+  verbatim into `globals.css`, with a shadcn-var → slate mapping so
+  `<Button>` / `<Alert>` / `<Card>` / `<Badge>` inherit the palette.
+- `.dark` block dropped — single theme only.
+- Inter + JetBrains Mono via Google Fonts.
+- `tailwind.config.ts` drops `hsl(...)` wrappers (slate tokens are
+  hex/rgba, not HSL triples) and adds `fontFamily.sans/mono` +
+  `stripe-flow` keyframes for StageProgress's decorative meter.
+- Global `prefers-reduced-motion: reduce` rule in `globals.css`
+  dampens stripe/pulse animations; active-tile accent stays via a
+  static accent ring so the state still reads without motion.
+
+### Server-side
+
+- `FileResponse(filename="out.mp4")` → `"translated.mp4"` so the saved
+  file matches the UI's download button label. Server-authoritative
+  via `Content-Disposition`; the client `<a download>` is
+  belt-and-suspenders.
+- S3 diagnostics (driven by an operator-reported silent-hang incident):
+  per-region INFO logs in `s3_text_editing.py` + try/except around
+  `editor.edit_text` with elapsed-time context, plus submit/result
+  timing in `anytext2_editor.py`. Deliberately no hard stage-level
+  timeout — legitimate edits on many-region clips can take 8-15
+  minutes, and a ceiling would risk killing real runs before data
+  showed the per-region 120s `server_timeout` was failing.
+
+### Review
+
+Two rounds of `@reviewer` pass, total 2 must-fix + 8 should-fix + 3
+nice-to-have, all must/should addressed:
+- Round 1 (post-state-machine integration): `useJobStream.failedStage`
+  capture, FailureCard aria-live on a sibling sr-only span not the
+  button, LogPanel composite key, deleteError inline alert.
+- Round 2 (post-polish): AppShell threshold docs + height-leg tests,
+  VideoCard blob-URL revoke deferred past StrictMode cleanup, StatusBand
+  prop-matrix coverage, StageProgress `prior` sum guard against
+  out-of-order `stage_complete`, `formatBytes` extracted, LogPanel
+  terminal-phase hiding documented as deliberate.
+
+### Files
+
+- `web/src/App.tsx` — state-machine owner (rewritten).
+- `web/src/api/client.ts`, `schemas.ts` — XHR createJob +
+  `UploadProgress` type.
+- `web/src/hooks/useJobStream.ts` — tick + `failedStage`.
+- `web/src/components/` — 17 new TSX files under `left/` + `right/`
+  subdirectories + the shell + reskinned primitives. Deleted
+  `UploadForm.tsx`, `JobView.tsx`, `ErrorAlert.tsx`.
+- `web/src/lib/` — new `format.ts` + `stages.ts`.
+- `web/src/styles/globals.css`, `tailwind.config.ts`, `index.html` —
+  token/font/motion wiring.
+- `server/app/routes.py` — `translated.mp4` filename.
+- `server/app/pipeline_runner.py` — commented-out `DEMO_FAIL_STAGE`
+  hook + `_run_demo_failure` helper for UI failure-view smoke.
+- `code/src/stages/s3_text_editing.py`,
+  `code/src/models/anytext2_editor.py` — S3 diagnostic logging.
+- `README.md` — reorganized (Environment Setup right after blurb,
+  then Usage / Web Application / Architecture / Project Structure).
+- `web/CLAUDE.md`, `docs/architecture.md` — refreshed for the
+  state-machine + shell + LogPanel-terminal-hidden convention.
+- `plan.md` → `docs/plans_archive/web-client-ui-redesign.md`.
+
+### Tests
+
+- Web: 60 → 147 (Vitest + jsdom). New coverage: XHR upload progress,
+  active-stage tick, AppShell viewport guard (width + height),
+  VideoCard blob lifecycle, LanguagePair swap, SubmitBar variants,
+  UploadProgress math + R2 degrade, StageProgress state classes +
+  elapsed readout + stale-event guard, LogPanel separator regex + S3
+  hint + auto-scroll, FailureCard clipboard + details + "Copied"
+  flash, RejoinCard metadata + CTA, StatusBand per-kind pills +
+  eyebrows + prop-matrix, format helper per-tier, App state-machine
+  transitions (including active → idle via Submit another / Delete).
+- Server: 87/87 + 3 deselected GPU-marked (+1 after the
+  `translated.mp4` filename assertion).
+- Pipeline: 446/446 non-e2e (includes the inbound S2 refiner + BPN
+  reflect-pad tests from the merge with origin/master).
+
+### Known open
+
+- Real GPU end-to-end smoke not run in-session — demo failure hook
+  exercised the failed view; no UI blockers expected on a real run.
+- Defer list persists: ETA heuristic, post-terminal log toggle,
+  region-count stat on Succeeded, Retry button on Failed, "from other
+  session" marker on Rejoin, `⟳ replace` chip during upload.
+
 ## 2026-04-18 — Fix BPN Border Halo via Reflect-Padding (feat/mv_refine_to_s2)
 
 ### Symptom
