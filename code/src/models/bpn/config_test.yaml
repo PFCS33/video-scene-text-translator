@@ -11,7 +11,9 @@ blur_kernel_size: 41
 checkpoint_dir: checkpoints/bpn_test
 
 data:
-  data_root: /workspace/tpm_dataset
+  # S2-refined ROIs (see generate_bpn_dataset.py). Swap to
+  # /workspace/tpm_dataset for a pre-refinement baseline run.
+  data_root: /workspace/bpn_dataset
   n_neighbors: 3
   image_size: [128, 256]
   batch_size: 8

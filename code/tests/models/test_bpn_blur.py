@@ -93,6 +93,27 @@ class TestBorderPreservation:
         out = blur(img, p["sigma_x"], p["sigma_y"], p["rho"], p["w"])
         torch.testing.assert_close(out, img, atol=1e-6, rtol=0.0)
 
+    def test_small_image_smaller_than_pad(self):
+        """Images with H or W < kernel_size//2 must not crash.
+
+        Canonical ROIs for short text tracks can be only 10-15 px tall.
+        reflect padding requires pad < input_size, which would fail
+        for a 41-px kernel (pad=20) on a 15-px-tall image. replicate
+        padding has no such constraint.
+        """
+        blur = DifferentiableBlur(kernel_size=41)
+        torch.manual_seed(2)
+        # Heights and widths deliberately below pad=20 on at least one axis.
+        for shape in [(1, 3, 15, 77), (1, 3, 10, 52), (1, 3, 25, 19)]:
+            img = torch.rand(*shape)
+            sx = torch.tensor([15.0])
+            sy = torch.tensor([8.0])
+            rho = torch.tensor([0.0])
+            w = torch.tensor([-0.5])
+            out = blur(img, sx, sy, rho, w)
+            assert out.shape == img.shape
+            assert torch.isfinite(out).all()
+
 
 class TestShapeContract:
     """Basic shape and range contracts on the blur output."""

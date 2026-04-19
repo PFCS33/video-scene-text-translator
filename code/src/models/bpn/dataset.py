@@ -1,14 +1,21 @@
 """Dataset for BPN training: loads sequences of aligned ROI images from tracks.
 
 Dataset structure:
-    tpm_dataset/
-        roi_extraction_robo_video_N/
+    bpn_dataset/                       # or legacy tpm_dataset/
+        <video_folder>/
+            corrected_track_info.json  # or legacy s1_tracks.json
             track_XX_TEXT/
                 frame_XXXXXX.png
                 ...
 
 Each track contains frontalized text ROIs from consecutive video frames.
 BPN training tuples: (reference_frame, neighbor_1, ..., neighbor_N).
+
+The per-video metadata JSON only needs two fields: ``track_id`` and
+``reference_frame_idx``. Both the new ``corrected_track_info.json``
+(written by scripts/generate_bpn_dataset.py) and the legacy
+``s1_tracks.json`` satisfy this contract, so this loader accepts
+either file.
 """
 
 import os
@@ -43,7 +50,12 @@ class BPNDataset(Dataset):
     ):
         """
         Args:
-            data_root: Path to tpm_dataset/.
+            data_root: Path to the ROI root. Expected layout is
+                ``<data_root>/<video>/{corrected_track_info.json |
+                s1_tracks.json, track_*/frame_*.png}``. New training
+                runs should point this at ``/workspace/bpn_dataset``
+                (S2-refined); legacy ``/workspace/tpm_dataset`` still
+                works.
             n_neighbors: Number of neighbor frames per sample (N).
             image_size: (H, W) to resize all ROIs to.
             video_indices: Which videos to include by folder name.
@@ -77,16 +89,21 @@ class BPNDataset(Dataset):
         if cache_in_ram:
             self._preload_cache()
 
+    # Per-video metadata JSON filenames, checked in priority order.
+    # ``corrected_track_info.json`` is produced by the S2-refined
+    # extraction pipeline; ``s1_tracks.json`` is the legacy raw S1 output.
+    _TRACK_METADATA_FILENAMES = ("corrected_track_info.json", "s1_tracks.json")
+
     def _build_samples(self, data_root, video_indices, max_tracks,
                        min_length, stride, seed):
         """Build training samples.
 
-        Each sample is constructed with the canonical reference frame (from
-        s1_tracks.json `reference_frame_idx`) at position 0, followed by
-        n_neighbors consecutive target frames drawn via a sliding window
-        over the rest of the track. This ensures every sample uses the
-        sharpest/most-frontal frame as the reference, which is what the
-        BPN expects.
+        Each sample is constructed with the canonical reference frame
+        (from the per-video metadata JSON's ``reference_frame_idx``) at
+        position 0, followed by n_neighbors consecutive target frames
+        drawn via a sliding window over the rest of the track. This
+        ensures every sample uses the sharpest/most-frontal frame as
+        the reference, which is what the BPN expects.
         """
         import json as _json
 
@@ -108,14 +125,19 @@ class BPNDataset(Dataset):
         rng = random.Random(seed)
 
         for vdir in video_dirs:
-            # Load track metadata to get canonical reference frame per track
-            tracks_json = vdir / "s1_tracks.json"
+            # Load track metadata to get canonical reference frame per track.
+            # Prefer the S2-refined metadata if present; fall back to
+            # legacy s1_tracks.json so old tpm_dataset layouts still work.
             ref_idx_by_tid: dict[int, int] = {}
-            if tracks_json.exists():
+            for fname in self._TRACK_METADATA_FILENAMES:
+                tracks_json = vdir / fname
+                if not tracks_json.exists():
+                    continue
                 with open(tracks_json) as f:
                     track_meta = _json.load(f)
                 for t in track_meta:
                     ref_idx_by_tid[int(t["track_id"])] = int(t["reference_frame_idx"])
+                break
 
             track_dirs = sorted([
                 d for d in vdir.iterdir()

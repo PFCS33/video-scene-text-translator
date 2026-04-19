@@ -82,16 +82,23 @@ class DifferentiableBlur(nn.Module):
         # Apply blur per-sample using grouped convolution.
         # Reshape to (1, B*C, H, W) so each channel gets its own group.
         #
-        # Pre-pad with reflect padding so the convolution is mean-preserving
+        # Pre-pad with replicate padding so the convolution is mean-preserving
         # all the way to the border. F.conv2d(padding=pad) uses zero padding,
         # which darkens the blurred output near the ROI edges. Downstream
         # Poisson blending (cv2.seamlessClone in S5) integrates the source's
         # gradient field from the destination's boundary, so a darker-at-border
         # source produces a halo: the composite's interior lifts above the
         # frame's ambient level by roughly (I_interior - I_border) * |w|.
+        #
+        # Replicate rather than reflect: reflect requires pad < input size
+        # in every spatial dimension, which fails on small canonical ROIs
+        # (some tracks end up 10–15 px tall). Replicate has no such
+        # constraint and gives equivalent halo-preventing behavior — the
+        # convolution sees real image-valued pixels outside the boundary
+        # instead of zeros.
         pad = self.kernel_size // 2
         img_flat = image.reshape(1, B * C, H, W)
-        img_padded = F.pad(img_flat, (pad, pad, pad, pad), mode="reflect")
+        img_padded = F.pad(img_flat, (pad, pad, pad, pad), mode="replicate")
         # Kernel: (B*C, 1, K, K) — one kernel per group
         kern_flat = kernel.repeat(1, C, 1, 1).reshape(B * C, 1,
                                                         self.kernel_size,
