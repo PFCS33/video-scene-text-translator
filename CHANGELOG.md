@@ -1,5 +1,72 @@
 # Changelog
 
+## 2026-04-19 — Retrain BPN on S2-Aligned Dataset, Enable by Default (feat/bpn_aligned_dataset)
+
+### Why
+
+The prior BPN checkpoint (`bpn_v0.pt`) was trained against two broken
+inputs: (1) the old `DifferentiableBlur` that zero-padded its
+convolution — producing artificial border darkness the optimizer had to
+explain away — and (2) raw S1 canonical ROIs whose (ref, target) pairs
+were not pixel-aligned, so the Stage 2 reconstruction loss pushed the
+network to explain geometric misalignment as blur. Both are fixed now:
+the blur is reflect-padded and a fresh `/workspace/bpn_dataset` was
+extracted with the S2 refiner folded into each `H_to_frontal`. This
+changelog entry covers the retrained checkpoint and the config flip
+that turns BPN back on in `adv.yaml`.
+
+### Retraining Pipeline Ready
+
+- `code/src/models/bpn/dataset.py` — top docstring updated; metadata
+  JSON lookup now tries `corrected_track_info.json` (S2-refined) first
+  and falls back to legacy `s1_tracks.json`. Both files expose the
+  only two fields the loader needs (`track_id`, `reference_frame_idx`),
+  so the same `BPNDataset` works against either layout.
+- `code/src/models/bpn/config.yaml` + the two test configs — default
+  `data_root` points at `/workspace/bpn_dataset` with a comment
+  pointing back at `scripts/generate_bpn_dataset.py` for regeneration
+  and noting how to swap in `/workspace/tpm_dataset` for a
+  pre-refinement baseline A/B.
+
+### bpn_v1 Checkpoint
+
+- Trained Stage 1 (synthetic blur supervision) → Stage 2
+  (self-supervised on S2-refined `/workspace/bpn_dataset`) with the
+  fixed reflect-padded `DifferentiableBlur`.
+- Evaluation on the held-out validation split:
+  - Reconstruction MSE: 0.00383 ± 0.00544 (std > mean — cluttered /
+    long sentences drive the upper tail).
+  - `sigma_x`: mean 1.71, range [0.85, 8.6] — back inside the Stage 1
+    training prior of [0.3, 1.8] (vs `bpn_v0`'s median 15 up to 35).
+  - `sigma_y`: mean 1.44, range [0.38, 8.7].
+  - `rho`: mean ≈ 0, std 0.0024 — known limitation, the model defaults
+    to axis-aligned anisotropic Gaussians rather than learning
+    rotations. Self-supervised reconstruction doesn't disentangle rho
+    from content well.
+  - `w`: mean -0.30, range [-1.0, +0.68] — blur-dominant but does
+    reach the sharpen half-space. Positive-`w` predictions are rare in
+    practice because S1 reference selection picks near-peak-sharpness
+    frames, so targets are rarely sharper than the reference.
+
+### Config Flip in adv.yaml
+
+- `propagation.use_bpn: true` (was `false`).
+- `propagation.bpn_checkpoint_path: ../checkpoints/bpn/bpn_v1.pt` (was
+  `../checkpoints/bpn/bpn_v0.pt`).
+- `checkpoints/download.sh` updated to pull `bpn_v1.pt` from the
+  corresponding Drive ID.
+
+### Known Limitations (tracked, not blocking)
+
+- Oriented motion blur is not modeled (rho collapse). Acceptable
+  tradeoff for this project's scope.
+- De-blurring (target sharper than ref) is rarely applied with
+  visible effect. Driven by reference-selection's sharpness bias
+  in the training data rather than the network itself.
+- Cluttered long sentences are the failure mode pulling reconstruction
+  MSE's upper tail — matches the alignment-quality signal already
+  flagged elsewhere.
+
 ## 2026-04-18 — Fix BPN Border Halo via Reflect-Padding (feat/mv_refine_to_s2)
 
 ### Symptom

@@ -5,7 +5,7 @@ stage: 1  # 1=supervised (synthetic blur), 2=self-supervised (real data)
 seed: 42
 device: cuda
 epochs: 30
-save_every: 1
+save_every: 5
 blur_kernel_size: 41
 
 # Checkpoint
@@ -14,7 +14,12 @@ checkpoint_dir: checkpoints/bpn
 
 # Data
 data:
-  data_root: /workspace/tpm_dataset
+  # S2-refined ROIs extracted by scripts/generate_bpn_dataset.py. Each
+  # (ref, neighbor) pair is pixel-aligned under the refiner, so the
+  # Stage 2 self-supervised loss no longer has to explain geometric
+  # misalignment as blur. Point at /workspace/tpm_dataset to reproduce
+  # the pre-S2-refinement baseline.
+  data_root: /workspace/bpn_dataset
   n_neighbors: 3
   image_size: [64, 128]  # H, W (source ROIs are ~32x71, larger is just upsampling)
   batch_size: 512

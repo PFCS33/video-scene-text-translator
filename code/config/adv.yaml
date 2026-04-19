@@ -95,8 +95,8 @@ propagation:
   # Only invoked when both use_lcm and use_bpn are True (paper order:
   # LCM then BPN). bpn_image_size must match the resolution the
   # checkpoint was trained at.
-  use_bpn: false
-  bpn_checkpoint_path: "../checkpoints/bpn/bpn_v0.pt"
+  use_bpn: true
+  bpn_checkpoint_path: "../checkpoints/bpn/bpn_v1.pt"
   #bpn_checkpoint_path: "checkpoints/bpn/bpn_stage1_best.pt"
   bpn_device: "cuda"
   bpn_n_neighbors: 3
