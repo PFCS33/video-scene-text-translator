@@ -1,5 +1,6 @@
 """Tests for Stage 5: Revert (De-Frontalization + Compositing)."""
 
+import cv2
 import numpy as np
 import pytest
 
@@ -1124,3 +1125,100 @@ class TestSeamlessCenterStability:
         )
         expected = RevertStage._seamless_center_from_corners(can_corners)
         assert seen_center["src_center"] == expected
+
+
+class TestPreInpaintMaskRasterisation:
+    """Regression guard for the mask-boundary jitter in _pre_inpaint_region.
+
+    The pre-fix path rasterised the expanded quad via
+    ``cv2.fillConvexPoly(mask, expanded.astype(np.int32), 255)`` followed
+    by a 5×5 ``cv2.erode`` and a boolean paste. Two problems:
+
+    1. ``.astype(np.int32)`` quantises each corner to the pixel grid,
+       so a sub-pixel quad drift that crosses an integer boundary
+       flipped the rasterised edge by a full pixel between frames.
+    2. The hard (boolean) paste turned any mismatch between the
+       inpainted and original backgrounds into a visible flickering
+       1-px ring as that edge oscillated.
+
+    The fix shrinks the expanded quad inward by a constant 2 px
+    (replacing the 5×5 erode buffer) and rasterises at ``shift=4,
+    lineType=cv2.LINE_AA`` so the boundary tracks sub-pixel motion
+    proportionally. The grayscale mask is then used as a soft alpha.
+    """
+
+    def test_shrink_moves_corners_toward_centroid_by_exact_px(self):
+        """Each corner ends up ``shrink_px`` closer to the centroid."""
+        corners = np.array([
+            [0, 0], [100, 0], [100, 100], [0, 100],
+        ], dtype=np.float32)
+        shrunk = RevertStage._shrink_quad_to_centroid(corners, shrink_px=5.0)
+        centroid = corners.mean(axis=0)
+        for i in range(4):
+            orig = float(np.linalg.norm(corners[i] - centroid))
+            new = float(np.linalg.norm(shrunk[i] - centroid))
+            assert abs((orig - new) - 5.0) < 1e-4
+
+    def test_shrink_zero_is_identity(self):
+        corners = np.array([
+            [10.5, 20.7], [110.3, 20.7], [110.3, 70.1], [10.5, 70.1],
+        ], dtype=np.float32)
+        shrunk = RevertStage._shrink_quad_to_centroid(corners, shrink_px=0.0)
+        np.testing.assert_allclose(shrunk, corners, atol=1e-4)
+
+    def test_aa_mask_has_soft_boundary(self):
+        """The rasterised mask must contain intermediate values at the edge."""
+        shape = (40, 80)
+        corners = np.array([
+            [10, 10], [50.5, 10], [50.5, 30], [10, 30],
+        ], dtype=np.float32)
+        mask = RevertStage._build_antialiased_mask(corners, shape)
+        assert mask.shape == shape
+        assert mask.dtype == np.uint8
+        unique = np.unique(mask)
+        intermediate = unique[(unique > 0) & (unique < 255)]
+        assert len(intermediate) > 0, (
+            f"AA mask has no gradient values; unique={unique}"
+        )
+
+    def test_aa_mask_reduces_jitter_vs_int32_rasterisation(self):
+        """Sub-pixel drift across a grid line moves AA mask less than hard mask.
+
+        The pre-fix rasterisation truncates corner coords via
+        ``.astype(np.int32)``, so 49.9→49 and 50.1→50 — a 0.2-px
+        drift flips a full column of ~height pixels between the two
+        masks. The AA path spreads the change across a few adjacent
+        columns with small per-pixel deltas. Summed absolute diff
+        must be strictly smaller for AA.
+        """
+        shape = (40, 80)
+        corners_a = np.array([
+            [10, 10], [49.9, 10], [49.9, 30], [10, 30],
+        ], dtype=np.float32)
+        corners_b = np.array([
+            [10, 10], [50.1, 10], [50.1, 30], [10, 30],
+        ], dtype=np.float32)
+
+        # Old hard rasterisation, for comparison.
+        hard_a = np.zeros(shape, dtype=np.uint8)
+        hard_b = np.zeros(shape, dtype=np.uint8)
+        cv2.fillConvexPoly(hard_a, corners_a.astype(np.int32), 255)
+        cv2.fillConvexPoly(hard_b, corners_b.astype(np.int32), 255)
+        hard_diff = int(np.abs(
+            hard_a.astype(np.int32) - hard_b.astype(np.int32)
+        ).sum())
+
+        aa_a = RevertStage._build_antialiased_mask(corners_a, shape)
+        aa_b = RevertStage._build_antialiased_mask(corners_b, shape)
+        aa_diff = int(np.abs(
+            aa_a.astype(np.int32) - aa_b.astype(np.int32)
+        ).sum())
+
+        assert hard_diff > 0, (
+            "Test input no longer exercises the int32-quantisation "
+            "jitter case; adjust corners_a / corners_b."
+        )
+        assert aa_diff < hard_diff, (
+            f"AA mask jitters as much as hard mask: "
+            f"hard_diff={hard_diff}, aa_diff={aa_diff}"
+        )
