@@ -55,7 +55,7 @@ describe("<VideoCard>", () => {
     expect(getByText(/2\.0\s*MB/i)).toBeInTheDocument();
   });
 
-  it("revokes the blob URL on unmount (R4)", () => {
+  it("revokes the blob URL on unmount (R4)", async () => {
     const file = makeFile();
     const { unmount } = render(
       <VideoCard file={file} variant="input" />,
@@ -67,8 +67,30 @@ describe("<VideoCard>", () => {
 
     unmount();
 
+    // Revoke is deferred a microtask past the cleanup (StrictMode-safe —
+    // see VideoCard.tsx docstring). `await Promise.resolve()` yields to
+    // the microtask queue so `queueMicrotask`'s callback drains before
+    // we assert.
+    await Promise.resolve();
     expect(URL.revokeObjectURL).toHaveBeenCalledTimes(1);
     expect(URL.revokeObjectURL).toHaveBeenCalledWith(BLOB_URL);
+  });
+
+  it("defers the revoke: URL.revokeObjectURL is NOT called synchronously in the cleanup", () => {
+    // Regression guard — the whole point of the microtask is to let React
+    // commit the next render before the revoke fires. If someone drops
+    // the deferral back to a sync revoke, this test catches it.
+    const file = makeFile();
+    const { unmount } = render(
+      <VideoCard file={file} variant="input" />,
+    );
+
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+
+    unmount();
+
+    // Right after unmount returns, the microtask hasn't drained yet.
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled();
   });
 
   it("renders 'INPUT' corner tag by default when variant is 'input'", () => {

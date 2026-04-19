@@ -48,16 +48,29 @@ export function VideoCard({
   variant,
   sourceLang,
 }: VideoCardProps): JSX.Element {
-  // Blob URL lifecycle. Use state + effect (not useMemo) so StrictMode's
-  // dev-only effect double-invoke doesn't leave us holding a revoked URL,
-  // and only render the <video> once the URL is set so the initial paint
-  // never carries src="" (some browsers refuse to load after that).
-  // useEffect cleanup revokes on file change + unmount (R4).
+  // Blob URL lifecycle. We hold the URL in state (not useMemo) so the
+  // initial render can guard on `blobUrl && ...` and avoid a paint with
+  // src="" — some browsers refuse to load after that.
+  //
+  // Revoke timing: `queueMicrotask` defers the revoke past React's
+  // synchronous cleanup pass. Why this matters under React 18 StrictMode
+  // (dev): React runs `mount → cleanup → mount` synchronously to surface
+  // impure effects. If we revoked synchronously in cleanup, the `<video>`
+  // tag would still have `src=<URL1>` in the DOM (the second mount hasn't
+  // swapped state to URL2 yet), and we'd yank the blob out from under it.
+  // Deferring the revoke a microtask gives React room to commit the new
+  // state before the tear-down runs.
+  //
+  // On genuine unmount (and in production where StrictMode doesn't
+  // double-invoke) the microtask still fires — just a tick later than it
+  // would have. No leak (R4).
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   useEffect(() => {
     const url = URL.createObjectURL(file);
     setBlobUrl(url);
-    return () => URL.revokeObjectURL(url);
+    return () => {
+      queueMicrotask(() => URL.revokeObjectURL(url));
+    };
   }, [file]);
 
   const tag = cornerTagText(variant, sourceLang);
