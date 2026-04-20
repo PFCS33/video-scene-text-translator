@@ -1,0 +1,87 @@
+\section{Related Work}
+\label{sec:related}
+
+\subsection{Image scene text editing}
+\label{sec:related:ste}
+
+Scene text editing (STE)---modifying the textual content of a
+natural image while preserving background, typography, and
+lighting---has grown into a small but active sub-field of
+image-to-image translation. Early learned approaches such as
+SRNet~\citep{wu2019srnet} cast STE as the composition of an
+inpainting module, a text-style transfer module, and a fusion
+module, trained adversarially with synthetic source/target pairs.
+MOSTEL~\citep{qu2023mostel} extends this line of work with
+stroke-level supervision for finer glyph control. More recent
+diffusion-based systems have come to dominate the area:
+AnyText~\citep{tuo2024anytext} and its successor
+AnyText2~\citep{tuo2025anytext2} combine a Stable Diffusion
+backbone~\citep{rombach2022stablediffusion} with a text-writing
+network that conditions generation on a target string, producing
+high-quality multilingual scene text. Our pipeline uses AnyText2 as
+its editing backend (Section~\ref{sec:method:s3}). All of these
+systems operate on single images and do not address the additional
+challenges of temporal coherence, per-frame lighting and blur
+adaptation, or propagation of a single edit across many frames of
+video.
+
+\subsection{Video scene text replacement}
+\label{sec:related:video}
+
+To our knowledge, the closest prior work to ours is
+STRIVE~\citep{subramanian2021strive}, which proposes a
+frontalize--edit--propagate--composite structure for replacing text
+in video and introduces a Text Propagation Module consisting of a
+Lighting Correction Module and a Blur Prediction Network. STRIVE's
+code has, to our knowledge, never been released, which makes direct
+reproduction impossible; our pipeline's overall shape is informed
+by STRIVE's design philosophy, but the implementation is independent
+and differs in important details (notably the use of a learned
+alignment refiner described in Section~\ref{sec:method:refiner}).
+Beyond STRIVE, we are not aware of a released end-to-end pipeline
+for cross-language video text replacement, which complicates
+quantitative comparison against prior work.
+
+\subsection{Generative video editing}
+\label{sec:related:generative}
+
+A parallel and fast-growing paradigm is end-to-end generative video
+editing. Commercial systems such as Runway's Gen-4
+Aleph~\citep{runway2025aleph} and research systems such as
+Sora~\citep{openai2024sora} rewrite arbitrary regions of video
+conditioned on natural-language prompts, achieving striking
+photorealism in lighting, texture, and motion. Reliable glyph-level
+control---producing a visually correct rendering of a specific
+target string, in the right script, grammar, and layout---remains an
+open research problem for these systems at the time of writing. We
+use Gen-4 Aleph as a qualitative comparison in
+Section~\ref{sec:exp:qualitative}, and we emphasize that the
+comparison is \emph{between paradigms}, not between competing
+solutions to the same problem.
+
+\subsection{Supporting vision components}
+\label{sec:related:support}
+
+Our pipeline relies on several established components. For scene
+text detection and recognition we use PaddleOCR's
+PP-OCRv4~\citep{paddleocr2024}, with a false-positive filter based
+on wordfreq~\citep{wordfreq} that rejects OCR detections whose
+recognized string has an anomalously low Zipf frequency. Temporal
+propagation of text regions between OCR-detected frames uses
+CoTracker3~\citep{karaev2024cotracker3}, a learned point tracker
+that is substantially smoother and faster on scene text than
+classical optical flow. For background isolation before lighting
+correction we support two interchangeable inpainters: SRNet reused
+as a learned text-removal network, and a segmentation-based pipeline
+built on Hi-SAM~\citep{ye2024hisam}, which specializes the Segment
+Anything Model~\citep{kirillov2023sam} to text strokes, followed by
+Navier--Stokes inpainting. Compositing uses standard techniques:
+feathered alpha blending, with a Poisson-blending
+fallback~\citep{perez2003poisson} available for difficult seams.
+The two networks we trained, described in
+Sections~\ref{sec:method:bpn} and~\ref{sec:method:refiner}, are
+built on a ResNet~\citep{he2016resnet} backbone and a simple
+convolutional encoder respectively. Spatial-Temporal Transformer
+Networks~\citep{zeng2020sttn} are a natural future direction for
+replacing our classical homography with a learned temporal
+frontalizer, but are not used in the current pipeline.

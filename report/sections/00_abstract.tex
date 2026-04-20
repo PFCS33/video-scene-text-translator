@@ -1,0 +1,21 @@
+\begin{abstract}
+  Scene text in video---signs, labels, menus, and printed matter
+  captured on camera---is a natural target for automated cross-language
+  localization, but end-to-end generative video editors currently lack
+  the glyph-level control needed to reliably render a specific target
+  string. We describe a prototype system that takes the opposite
+  approach: a modular five-stage pipeline that explicitly detects,
+  tracks, edits, and composites scene text, preserving control over the
+  target string at every step. The system integrates seven
+  machine-learning models, of which two---a compact Blur Prediction
+  Network and an Alignment Refiner---we designed and trained
+  ourselves to address per-frame blur adaptation and residual tracking
+  error respectively. We describe the design of each stage, the
+  engineering decisions needed to handle long-to-short translations
+  and interchangeable background inpainting, and we evaluate on real
+  video examples. Results show the feasibility of the approach and
+  position the system as a reproducible open baseline in the
+  glyph-controlled paradigm, complementary to generative video editors
+  that currently offer superior style preservation at the cost of
+  glyph accuracy.
+\end{abstract}

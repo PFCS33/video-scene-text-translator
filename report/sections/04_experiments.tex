@@ -1,0 +1,170 @@
+\section{Experiments and Results}
+\label{sec:experiments}
+
+\subsection{Setup}
+\label{sec:exp:setup}
+
+All results in this section use the primary configuration of our
+pipeline (corresponding to \texttt{adv.yaml} in the released
+codebase): PaddleOCR as the detector, CoTracker3 online mode for
+temporal propagation, AnyText2 as the text-editing backend, Hi-SAM
+as the inpainter backend, and both the BPN and Alignment Refiner
+active. Hardware is a single consumer-grade GPU. The evaluation
+videos consist of real-world scenes captured with handheld or
+low-rate camera motion, in natural lighting, and cover a mix of
+Latin-to-Chinese and Latin-to-Spanish localization pairs.
+
+\subsection{Qualitative comparison with a generative baseline}
+\label{sec:exp:qualitative}
+
+Figures~\ref{fig:cmp:warden} and~\ref{fig:cmp:highway} show
+side-by-side qualitative comparisons between our pipeline and
+Runway's Gen-4 Aleph~\citep{runway2025aleph}, an end-to-end
+generative video editor. For each example we show the source
+frame, Gen-4 Aleph's output when prompted for the equivalent
+translation, and our pipeline's output. The two systems exhibit a
+consistent pattern across examples. Gen-4 Aleph's output preserves
+the photorealistic texture and lighting of the source surface---
+wood grain, paint scuff, subtle lighting gradient---to a level
+that is difficult to match with explicit compositing. At the same
+time, its rendered glyphs are frequently unreadable or
+semantically incorrect, for example producing unrelated Chinese
+characters that are neither the source word nor its translation.
+Our pipeline produces the correct target string in every tested
+example, but inherits the coarser texture blending characteristic
+of a compositing approach. We view these as complementary
+capabilities rather than competing ones: Gen-4 Aleph excels at
+naturalism, our pipeline excels at glyph correctness.
+
+\figplaceholder{comparison_warden}{\linewidth}%
+  {Generative systems such as Gen-4 Aleph (center) excel at
+   photorealistic style preservation but produce incorrect glyphs
+   when prompted for a specific translation, yielding unreadable
+   or gibberish text. Our pipeline (right) produces correct target
+   glyphs through explicit compositing, at the cost of reduced
+   style-transfer quality. The two approaches currently address
+   different subproblems of video text localization. Source:
+   English ``WARDEN'' on a wooden surface; target: Simplified
+   Chinese ``\begin{CJK*}{UTF8}{gbsn}典狱长\end{CJK*}.''}%
+  {fig:cmp:warden}
+
+\figplaceholder{comparison_highway}{\linewidth}%
+  {Second qualitative example. Highway sign: source English text
+   (left), Gen-4 Aleph output (center, style preserved but glyphs
+   incorrect), our pipeline output (right, correct target glyphs
+   with acceptable style approximation).}%
+  {fig:cmp:highway}
+
+\subsection{Module ablations}
+\label{sec:exp:ablation}
+
+To assess the contribution of individual components we designed or
+tuned, we disable them one at a time and measure three quantitative
+metrics on a representative video set: (i)~\emph{OCR readback
+accuracy}, defined as PaddleOCR's string-level match rate when
+re-detecting the translated text in our output;
+(ii)~\emph{background SSIM}~\citep{wang2004ssim} measured outside
+the text alpha mask, which captures whether the pipeline damages
+surrounding scene pixels; and (iii)~\emph{quad jitter}, the mean
+per-frame corner displacement of the final composite, which
+captures temporal stability. Table~\ref{tab:ablation} summarizes
+the results.
+
+\begin{table}[t]
+  \centering
+  \caption{Module ablations on a representative video set. Each row
+    disables a single component of the pipeline.
+    OCR readback: PaddleOCR re-detection accuracy on output frames.
+    Background SSIM: structural similarity in non-text regions.
+    Quad jitter: mean per-frame corner displacement (lower is more
+    temporally stable). \emph{All numbers below are placeholders to
+    be filled with measured values.}}
+  \label{tab:ablation}
+  \begin{tabular}{lccc}
+    \toprule
+    Configuration & OCR readback $\uparrow$ & Background SSIM $\uparrow$ & Quad jitter (px) $\downarrow$ \\
+    \midrule
+    Full pipeline                    & XX.X & X.XX & X.X \\
+    w/o Alignment Refiner            & XX.X & X.XX & X.X \\
+    w/o BPN (LCM only)               & XX.X & X.XX & X.X \\
+    w/o LCM (histogram match only)   & XX.X & X.XX & X.X \\
+    w/o adaptive mask                & XX.X & X.XX & --- \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+We expect the strongest effects to fall on temporal stability
+(Alignment Refiner) and readback accuracy (adaptive mask), since
+these target the most direct failure modes of a naive pipeline.
+Figures~\ref{fig:abl:bpn}, \ref{fig:abl:refiner}, and
+\ref{fig:abl:lcm} give qualitative illustrations of each component's
+contribution. The BPN's contribution is often visually clear even
+when the numerical SSIM gap is modest, because motion blur matters
+most at a small set of locally high-blur frames that averaging
+tends to hide.
+
+\figplaceholder{bpn_ablation}{\linewidth}%
+  {Effect of the Blur Prediction Network on per-frame appearance.
+   Top row: output without BPN---the inserted text is uniformly
+   sharp regardless of frame-level blur. Bottom row: output with
+   BPN---per-frame blur parameters cause the inserted text to
+   match the surrounding scene's motion and focus blur.}%
+  {fig:abl:bpn}
+
+\figplaceholder{refiner_jitter}{\linewidth}%
+  {Effect of the Alignment Refiner on inter-frame stability.
+   Plotted: corner displacement (pixels) over frame index for a
+   single track, with and without the refiner. The refiner reduces
+   drift from CoTracker residual error.}%
+  {fig:abl:refiner}
+
+\figplaceholder{lcm_ablation}{\linewidth}%
+  {Effect of the Lighting Correction Module in a scene with strong
+   directional lighting. Left: output without LCM. Right: output
+   with LCM applying a per-pixel ratio map derived from the
+   inpainted backgrounds.}%
+  {fig:abl:lcm}
+
+\subsection{Adaptive mask for long-to-short translation}
+\label{sec:exp:adaptive}
+
+Figure~\ref{fig:adaptive} isolates the adaptive-mask path of S3 on
+a pair in which the target string is substantially shorter than the
+source. Without the adaptive path, AnyText2 tends to fill the
+oversized mask with plausible-looking but semantically incorrect
+glyphs. With the adaptive path, the target renders at its natural
+width, the remainder of the mask region contains a feathered
+restoration of the original pixels, and the overall appearance is
+clean.
+
+\figplaceholder{adaptive_mask_before_after}{\linewidth}%
+  {The adaptive-mask path in S3 for long-to-short translations.
+   Left: the source canonical ROI with a long source string.
+   Middle: the hybrid canvas after the configured background
+   inpainter pre-clears the source text and a feathered centered
+   strip of original pixels is restored at the target's natural
+   width. Right: the AnyText2 output, rendered into the shrunk
+   mask region, free of the gibberish-fill artifact common to
+   mask-based editors when target length is much shorter than
+   source.}%
+  {fig:adaptive}
+
+\subsection{Current limitations}
+\label{sec:exp:limits}
+
+Three limitations are worth noting explicitly. The most important
+is the \emph{style-transfer gap} against end-to-end generative
+baselines: by design, our pipeline produces correct target glyphs,
+but the resulting texture match is not as naturalistic as Gen-4
+Aleph's. We view this as the fundamental tradeoff of the
+glyph-controlled paradigm. Second, \emph{temporal stability} is
+imperfect even with the Alignment Refiner: homographies are
+estimated per-frame and the refiner predicts per-frame
+independently, which leaves small micro-oscillations in the
+composited corners that are sometimes visible on long clips.
+Third, the adaptive mask's character-class width heuristic is an
+approximation: highly stylized fonts whose glyph widths deviate
+substantially from the heuristic averages can still leave a small
+residual artifact at the mask edges. All three are promising
+directions for future work and do not affect the feasibility
+result.

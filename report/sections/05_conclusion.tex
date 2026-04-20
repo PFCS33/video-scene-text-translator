@@ -1,0 +1,95 @@
+\section{Conclusion and Future Work}
+\label{sec:conclusion}
+
+\subsection{Summary}
+\label{sec:conclusion:summary}
+
+We presented a prototype end-to-end system for cross-language scene
+text replacement in video. The system is structured as a five-stage
+pipeline that integrates seven machine-learning models---two of
+which, a Blur Prediction Network and an Alignment Refiner, we
+designed and trained from scratch to address per-frame blur
+adaptation and residual tracking error respectively. The other
+five components (PaddleOCR, CoTracker3, AnyText2, SRNet, and
+Hi-SAM) are pretrained and used through stable interfaces. We
+described each stage in detail, including the engineering decisions
+made to handle long-to-short translations, interchangeable
+background inpainting, and geometric refinement of the canonical
+space. Evaluation on real video examples shows the feasibility of
+the approach.
+
+\subsection{Model involvement}
+\label{sec:conclusion:involvement}
+
+Table~\ref{tab:involvement} summarizes the provenance of each model
+in the pipeline, and the nature of our own involvement with it.
+
+\begin{table}[t]
+  \centering
+  \caption{Models in the pipeline and our involvement with each.}
+  \label{tab:involvement}
+  \begin{tabular}{lll}
+    \toprule
+    Model & Stage & Our involvement \\
+    \midrule
+    PaddleOCR (PP-OCRv4) & S1 detection       & Pre-trained, used as is \\
+    CoTracker3           & S1 tracking        & Pre-trained, used as is \\
+    AnyText2             & S3 text editing    & Pre-trained, used as is (Gradio server) \\
+    SRNet                & S3/S4/S5 inpainting & Pre-trained, used as is \\
+    Hi-SAM               & S3/S4/S5 inpainting & Pre-trained, used as is (default backend) \\
+    LCM                  & S4 lighting        & Reimplementation of STRIVE's algorithm \\
+    \textbf{BPN}         & S4 blur prediction & \textbf{Trained from scratch} on S2-aligned data \\
+    \textbf{Alignment Refiner} & S2 drift correction & \textbf{Designed and trained from scratch} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Positioning}
+\label{sec:conclusion:framing}
+
+We view this system as a strong, reproducible, open baseline in the
+glyph-controlled paradigm of video text localization. The
+generative paradigm---Sora~\citep{openai2024sora}, Gen-4
+Aleph~\citep{runway2025aleph}, and their successors---currently
+achieves superior style preservation and is likely to dominate the
+space as glyph control in those systems matures. Until that
+happens, modular pipelines like ours offer the predictable
+correctness that end-to-end generative models cannot yet guarantee.
+
+The two approaches are complementary in capability rather than
+competitors for the same problem: generative systems excel at
+naturalistic style; glyph-controlled pipelines excel at
+target-string fidelity. Honest positioning of our work therefore
+frames it as a reference implementation of one side of this
+tradeoff, and as a starting point for future hybrid systems, rather
+than as a direct competitor to end-to-end generative editing.
+
+\subsection{Future work}
+\label{sec:conclusion:future}
+
+Several directions follow naturally from the design decisions and
+limitations described above.
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Hybrid generative plus glyph-controlled
+    compositing.} The most promising long-term direction: use a
+    generative video model for the background and style layer, and
+    a glyph-controlled pipeline such as ours for the text layer,
+    combining the strengths of both paradigms.
+  \item \textbf{Temporal smoothing of the refiner's predictions.}
+    The Alignment Refiner currently predicts $\Delta H$ per frame
+    independently, leaving small inter-frame micro-oscillations.
+    Smoothing over a short temporal window of predicted corner
+    offsets is a natural extension.
+  \item \textbf{Strengthened rotation signal for the BPN.} The BPN
+    tends to predict $\rho \approx 0$ on real data, indicating
+    weak signal for rotated blur. Enriching the training
+    distribution with oriented blur pairs would improve
+    blur-matched compositing for fast-moving subjects.
+  \item \textbf{Streaming main pipeline for long videos.} The main
+    pipeline currently loads all video frames into memory, which
+    limits it to short clips. A streaming architecture already
+    exists in our data-generation tool; porting it to the main
+    pipeline would lift this limit and extend the system to
+    long-form content.
+\end{itemize}

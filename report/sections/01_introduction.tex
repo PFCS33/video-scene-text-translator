@@ -1,0 +1,86 @@
+\section{Introduction}
+\label{sec:introduction}
+
+Video is increasingly the primary medium for consumer content,
+education, and public communication. As audiences become more global,
+the demand for localized versions of the same video has grown;
+yet while dubbing and subtitle generation are now routine, the
+\emph{scene text} that appears \emph{inside} the video---signs,
+menus, banners, product labels, handwritten notes captured in the
+frame---remains largely untouched by automated localization. Manual
+alternatives such as rotoscoping, frame-by-frame repainting, or
+3D tracking with replacement assets are labor-intensive and do not
+scale. Automating the process of \emph{cross-language scene text
+replacement}, in which source-language text is replaced in place with
+a target-language equivalent, is therefore an attractive engineering
+goal.
+
+The task is notoriously difficult. A usable replacement must be
+simultaneously (i)~\emph{translated} correctly into the target
+language, (ii)~\emph{geometrically aligned} with the original text
+quadrilateral in every frame, (iii)~\emph{temporally consistent} so
+that the result does not flicker or drift across frames, and
+(iv)~\emph{visually realistic}, inheriting the style, texture,
+lighting, and motion blur of the surrounding scene. A failure on any
+of these axes is immediately visible to a viewer.
+
+Two complementary paradigms currently address this space. The first
+is \emph{end-to-end generative video editing}: systems such as
+Sora~\citep{openai2024sora} and Runway's Gen-4 Aleph~\citep{runway2025aleph}
+rewrite video frames at unprecedented photorealistic quality, and
+their central strength is naturalism---lighting, texture, and motion
+are preserved in a way that hand-crafted compositors cannot currently
+match. Their limitation, at the time of writing, is \emph{glyph-level
+control}: when prompted for a specific translation, these models
+frequently produce unreadable or incorrect target-language strings,
+because reliably rendering glyphs conditioned on a target string
+remains an open research problem. The second paradigm is
+\emph{glyph-controlled compositing}: an explicit pipeline that
+detects existing text, generates the target string in an editor that
+accepts the string as input, and composites the result back into the
+video. This paradigm trades some of the naturalism of generative
+systems for predictable control over what text appears on screen.
+
+Our work occupies the second paradigm. We present a prototype system
+for cross-language scene text replacement that takes as input a
+source-language video and a target language, and produces a video
+with the same content but with all detected scene text replaced by
+correct translations. The system is structured as a five-stage
+pipeline integrating seven machine-learning models, of which two---a
+Blur Prediction Network (BPN) and an Alignment Refiner---we designed
+and trained from scratch to address, respectively, per-frame blur
+adaptation and residual tracking error in the compositing path. The
+remaining five components (PaddleOCR, CoTracker3, AnyText2, SRNet,
+and Hi-SAM) are pretrained and used through stable interfaces. The
+whole pipeline is packaged as a reproducible open reference
+implementation.
+
+We view this system as a \emph{strong baseline} in the
+glyph-controlled paradigm rather than a competitor to end-to-end
+generative video editing. The generative paradigm is currently
+winning on style and is likely to dominate as glyph control matures
+in those systems; until then, modular pipelines such as ours offer
+the predictable correctness that end-to-end generative models cannot
+yet guarantee. The two approaches are complementary, and we expect
+that hybrid systems combining generative style with glyph-controlled
+compositing are the most promising long-term direction.
+
+The remainder of the report is structured as follows.
+Section~\ref{sec:related} surveys related work in image scene text
+editing, video text replacement, generative video editing, and the
+supporting vision components we build on.
+Section~\ref{sec:method} presents the full pipeline stage by stage
+and gives detailed accounts of the two models we trained.
+Section~\ref{sec:experiments} presents qualitative comparisons
+against a generative baseline, per-module ablations, and a brief
+discussion of current limitations. Section~\ref{sec:conclusion}
+closes with an honest assessment of the system's contribution and
+open directions for future work.
+
+\figplaceholder{hero_webui}{\linewidth}%
+  {Our prototype end-to-end system, shown via its web interface:
+   the user uploads a video, selects source and target languages,
+   and receives a localized output in which scene text has been
+   replaced frame by frame. Internally the system integrates seven
+   ML models across five stages.}%
+  {fig:hero}

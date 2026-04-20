@@ -1,0 +1,372 @@
+\section{Methodology}
+\label{sec:method}
+
+\subsection{Pipeline overview}
+\label{sec:method:overview}
+
+Our system processes an input video through five sequential stages
+(Figure~\ref{fig:pipeline}). Stage~1 (S1) detects scene text on a
+regular sampling of frames, groups detections into temporally
+coherent tracks via intersection-over-union matching, translates
+each track's source text into the target language, selects one
+frame per track as the \emph{reference} for that track, and fills
+the remaining frames by optical-flow propagation of the detected
+quad. Stage~2 (S2) computes a homography from each frame's quad to a
+canonical frontal rectangle shared by the whole track, and refines
+the result with a learned residual-homography predictor that
+corrects tracker drift. Stage~3 (S3) warps the reference frame into
+canonical space and passes it through a text-editing model that
+accepts the target string and returns an edited region of interest
+(ROI) in which the source text has been replaced. Stage~4 (S4)
+adapts that single edited ROI to every other frame via a per-pixel
+lighting correction and a per-frame blur prediction. Stage~5 (S5)
+warps each adapted ROI back to the frame's perspective via the
+inverse homography and composites it into the original frame.
+
+\figplaceholderwide{pipeline}{\linewidth}%
+  {Five-stage pipeline for cross-language scene text replacement.
+   S1 detects, tracks, translates, and selects one reference frame
+   per track; S2 computes and refines a homography to canonical
+   frontal space; S3 runs the reference frame's canonical ROI
+   through a text-editing model; S4 adapts the edited ROI to every
+   other frame via a lighting correction module and our Blur
+   Prediction Network; S5 warps each adapted ROI back to the
+   original perspective and composites it into the frame.}%
+  {fig:pipeline}
+
+The system is organized around a single central dataclass,
+\texttt{TextTrack}, that carries all per-track state through the
+pipeline; each stage enriches this object rather than producing
+parallel data structures. All tunable parameters are exposed via
+YAML configuration files with validators that enforce weight-sum
+constraints and disallow mutually incompatible combinations.
+Expensive resources---the OCR engine, the translator, the
+text-editing server, inpainters, and the two trained networks---are
+lazily initialized on first use so that the pipeline starts quickly
+and degrades gracefully when an optional component is missing.
+
+The two models we trained---a Blur Prediction Network (BPN) in S4
+and an Alignment Refiner in S2---are described in dedicated
+subsections (\ref{sec:method:bpn} and~\ref{sec:method:refiner})
+below. The remaining five ML models (PaddleOCR, CoTracker3,
+AnyText2, SRNet, and Hi-SAM) are pretrained and used without
+modification.
+
+\subsection{Stage 1: Detection, tracking, translation, and reference selection}
+\label{sec:method:s1}
+
+S1 produces a set of \emph{tracks}, each a maximal temporal chain
+of text detections that plausibly correspond to the same physical
+text in the scene. We run PaddleOCR~\citep{paddleocr2024} on every
+$N$-th frame (configurable) to obtain text quads, recognized source
+strings, and per-detection confidences, and discard detections
+whose recognized string has a Zipf frequency below a threshold
+under \texttt{wordfreq}~\citep{wordfreq}---a simple but effective
+filter against OCR false positives on textured or geometric
+backgrounds. Frame-level detections are grouped into tracks
+greedily by IoU match with a configurable break threshold; a
+text-similarity check prevents accidental merging when two
+unrelated quads briefly overlap.
+
+For each grouped track we translate the source string once using
+\texttt{deep-translator} with a Google translation backend and a
+MyMemory fallback (with locale-code mapping, since MyMemory
+expects \texttt{en-GB} rather than \texttt{en} and \texttt{zh-CN}
+cased exactly so). Between OCR-detected frames, quads are filled by
+optical flow. We support classical Farneback flow as a CPU
+fallback, and CoTracker3~\citep{karaev2024cotracker3} online mode
+as the default; the latter tracks the four corners of each quad
+via a learned point tracker in sliding 60-frame windows, producing
+substantially smoother trajectories than classical methods.
+
+The final step of S1 selects, for each track, a \emph{reference
+frame}: the frame at which we will perform the actual text edit.
+Inspired by STRIVE~\citep{subramanian2021strive}, we apply a
+four-filter funnel: (i)~keep detections with the maximum
+recognized-text length within the track (to avoid partial
+detections), (ii)~keep those with OCR confidence above a threshold,
+(iii)~keep the top~$K$ by sharpness (measured as Laplacian
+variance), and (iv)~rank the survivors by a weighted composite of
+contrast (Otsu inter-class variance) and frontality (the ratio of
+quad area to bounding-box area). This choice is critical: all of
+S3's editing quality depends on the quality of the frame we hand
+to the text-editing model.
+
+\subsection{Stage 2: Frontalization and Alignment Refinement}
+\label{sec:method:s2}
+
+Given a track with quads in every frame and a single reference
+frame, S2 establishes a \emph{canonical frontal space}: an
+axis-aligned rectangle whose dimensions are derived from the
+reference quad's edge lengths. For each detection we compute a
+homography $H_{\mathrm{to\_frontal}}$ from the frame quad to this
+canonical rectangle and store its inverse
+$H_{\mathrm{from\_frontal}}$ on the same detection. S2 is
+deliberately pure geometry: no pixels are warped here; warping is
+done on demand by downstream stages. The baseline homography is
+estimated via RANSAC with a 5-pixel reprojection threshold,
+optionally using a grid of CoTracker points inside the quad for
+multi-point least-squares refinement.
+
+CoTracker's residual tracking error, while small (typically
+4--8~pixels), causes pixel-level misalignment between the canonical
+representation of one frame and another. This misalignment degrades
+every downstream stage: lighting correction in S4 relies on
+comparing pixel-aligned background regions, and S5's composite
+inherits any drift introduced upstream. To address this we
+designed and trained an \emph{Alignment Refiner}, a small
+convolutional network that takes a reference canonical ROI and a
+target canonical ROI and predicts four corner offsets. These
+offsets are converted into a residual homography $\Delta H$ via a
+differentiable direct linear transform (DLT), and folded into the
+warp chain as $H_{\mathrm{to\_frontal}}' = \Delta H^{-1}\,
+H_{\mathrm{to\_frontal}}$. The architecture and training scheme are
+described in Section~\ref{sec:method:refiner}. A sanity gate
+rejects predictions whose maximum corner offset exceeds 16~pixels,
+silently falling back to the unrefined baseline in such cases.
+
+\subsection{Stage 3: Text Editing}
+\label{sec:method:s3}
+
+S3 is the stage at which the target-language string actually
+appears. Using $H_{\mathrm{to\_frontal}}$ from the refined S2
+output, we warp the reference frame into canonical space to produce
+a clean, rectified ROI. We optionally expand the ROI by 30\% per
+side (padding with surrounding scene pixels) before editing, to
+give the editor additional context for style matching, and then
+crop the result back after editing.
+
+The editor itself is accessed through a \texttt{BaseTextEditor}
+abstract base class, allowing us to switch backends via
+configuration. In our primary configuration the backend is
+AnyText2~\citep{tuo2025anytext2}, a diffusion-based multilingual
+text-image editor built on Stable
+Diffusion~\citep{rombach2022stablediffusion}. We run the AnyText2
+model in a separate Gradio server process and interact with it over
+HTTP; this decouples the main pipeline from the editor's GPU memory
+requirements and its own inference stack.
+
+A practical issue arises when target and source differ substantially
+in length. When, for example, a long source string is replaced by a
+much shorter target, the source mask carries more space than the
+target glyphs need, and AnyText2---like most mask-based scene text
+editors---tends to fill the excess with hallucinated gibberish. We
+address this with an \emph{adaptive mask} path. We estimate the
+target string's natural width from a character-class width
+heuristic: full width $1.0$ for CJK characters, $0.60$ for Latin
+uppercase, $0.50$ for lowercase, $0.55$ for digits, and $0.30$ for
+spaces, each multiplied by the canonical height. When this estimate
+is more than $15\%$ narrower than the source canonical, we
+(i)~pre-inpaint the source text out of the canonical ROI using the
+pipeline's configured inpainter backend
+(Section~\ref{sec:method:inpainter}); (ii)~restore a centered,
+feathered strip of original pixels matching the target's natural
+width; and (iii)~send this hybrid image, together with a shrunk
+mask, to AnyText2. The result is a clean edit at the target's
+natural width, without the gibberish-fill artifact common to
+mask-based editors.
+
+\subsection{Stage 4: Propagation}
+\label{sec:method:s4}
+
+S4 adapts the single edited ROI produced by S3 to match each
+target frame's appearance. Two effects dominate: lighting and
+blur.
+
+\paragraph{Lighting correction.}
+We adopt the Lighting Correction Module (LCM) structure from
+STRIVE~\citep{subramanian2021strive}: inpaint the source text away
+from both the reference and the target canonical ROIs (yielding
+two clean backgrounds), compute a per-pixel multiplicative ratio
+map between them, smooth with a Gaussian kernel, and multiply the
+edited reference ROI by this ratio. Operations are carried out in
+the log domain for numerical stability. Background isolation uses
+one of two interchangeable inpainters (Section~\ref{sec:method:inpainter});
+in our default configuration Hi-SAM~\citep{ye2024hisam} is used
+here. When inpainted backgrounds are unavailable, S4 falls back to
+a simpler global histogram match on the luminance channel.
+
+\paragraph{Blur adaptation.}
+A correctly lit edit can still look out of place if its sharpness
+does not match the frame. Camera and object motion in video
+produce frame-dependent blur that static compositing leaves
+unmodeled. We address this with a Blur Prediction Network (BPN),
+described in Section~\ref{sec:method:bpn}. Given the reference
+canonical ROI and a small temporal window of target canonical
+ROIs, the BPN predicts parameters of an anisotropic Gaussian blur
+kernel and a residual weight, which are then applied to the
+lighting-corrected edit via a differentiable blur operator. Each
+frame thus receives an edit that is blur-matched to its local
+temporal neighborhood.
+
+S4 produces, for each frame, a \texttt{PropagatedROI} object
+carrying the adapted pixels and a feathered alpha mask that is
+approximately~$1$ in the interior and falls smoothly to~$0$ over
+the outer $10\%$ of each dimension. The feathering ensures that
+downstream compositing does not produce visible seams.
+
+\subsection{Stage 5: Revert and Compositing}
+\label{sec:method:s5}
+
+S5 is the inverse of S2 followed by compositing. For each
+detection we warp the corresponding \texttt{PropagatedROI} back to
+the frame's perspective using $H_{\mathrm{from\_frontal}}$; in
+practice we warp only to the bounding box of the target quad
+(expanded by 5\%) rather than to the full frame, which is both
+faster and more memory-efficient. Optional temporal smoothing can
+be applied to the projected corner positions across a short
+window, operating on corners rather than on raw $3\times 3$
+matrices so that averaging remains geometrically meaningful.
+
+Before compositing, S5 optionally runs a second pass of inpainting
+over an expanded version of the target bounding box in the
+original frame. This step cleans any residual source-text boundary
+that falls outside the tight text mask of S4. The two inpainter
+call sites---S4 background isolation and S5 pre-composite
+cleanup---are independent instances with independent
+configurations, allowing, for example, a Hi-SAM backend in S4
+paired with an SRNet backend in S5.
+
+Compositing itself is feathered alpha blending by default:
+$F' = F\,(1-\alpha) + R\,\alpha$, where $F$ is the original frame,
+$R$ is the warped propagated ROI, and $\alpha$ is the feathered
+alpha mask from S4. A Poisson-blending
+fallback~\citep{perez2003poisson} based on \texttt{cv2.seamlessClone}
+is available for cases where gradient-domain seam matching is
+preferred, but with proper feathering it is rarely needed.
+
+\subsection{Blur Prediction Network}
+\label{sec:method:bpn}
+
+The BPN takes the concatenation of a reference canonical ROI and
+$N$ target canonical ROIs along the channel dimension---a total of
+$3(N+1)$ channels; we use $N=3$, giving $12$ channels at
+$64\times 128$ input resolution---and predicts the blur parameters
+$(\sigma_x, \sigma_y, \rho, w)$ for each of the $N$ targets. The
+network uses a standard ResNet18~\citep{he2016resnet} backbone
+whose first convolutional layer is replaced by a 12-channel input
+convolution initialized by tiling the ImageNet-pretrained
+three-channel weights across the expanded fan-in. The final
+feature map is spatially averaged and passed through a two-layer
+fully-connected head that emits $4N$ parameters; softplus and
+$\tanh$ activations constrain $\sigma$ to be positive and
+$(\rho, w)$ to lie in~$[-1, 1]$. The total parameter count is
+approximately $1.24$M.
+
+At inference, the predicted parameters parameterize a
+differentiable blur operator:
+\begin{equation}
+  I_{\mathrm{out}} = (1 + w)\,I_{\mathrm{ref}} - w\,(I_{\mathrm{ref}} \ast G_{\sigma_x, \sigma_y, \rho}),
+  \label{eq:bpn}
+\end{equation}
+where $G_{\sigma_x, \sigma_y, \rho}$ is an oriented anisotropic
+Gaussian kernel. A small but important detail: we use replicate
+padding rather than reflect padding in the blur convolution,
+because reflect padding requires
+$\mathrm{pad} < \mathrm{input\_size}$ in each dimension, which
+fails on real-world tracks as small as 10--15~pixels tall when the
+kernel is 41~pixels wide. Replicate has no such constraint and
+gives equivalent halo suppression. This is an inference-time
+robustness fix: training inputs are always $64\times 128$ and so
+are unaffected.
+
+Training proceeds in two stages. In Stage~1 (supervised), we
+generate synthetic blur pairs by applying a known oriented
+Gaussian blur with random $(\sigma_x, \sigma_y, \rho, w)$ to a
+clean reference ROI and supervise on parameter MSE. This teaches
+the network the parameter space without risking overfitting to
+noisy real data. In Stage~2 (self-supervised), we draw two random
+distinct frames from the same track---with no temporal-proximity
+constraint, since in deployment the reference may be hundreds of
+frames from the target---and supervise with a Charbonnier
+reconstruction loss between the predicted-blurred reference and
+the target, augmented by a temporal consistency term on adjacent
+frame pairs.
+
+Dataset preparation is a key detail. Pixel-level training requires
+that reference and target canonical ROIs be geometrically aligned;
+residual tracker error otherwise manifests as apparent blur, and
+the network wastes capacity explaining geometry as blur. We
+generate the training dataset through the pipeline's own
+data-generation tool, using the S2-refined homographies from the
+Alignment Refiner. This alignment ensures that the signal the
+network sees at training time matches the signal it will see at
+inference time.
+
+\subsection{Alignment Refiner}
+\label{sec:method:refiner}
+
+The Alignment Refiner takes a six-channel input (two RGB canonical
+ROIs concatenated along the channel axis) at $64\times 128$
+resolution and predicts eight real numbers: four $(dx, dy)$ corner
+offsets. The network body is a deliberately small convolutional
+encoder---four Conv-BN-ReLU blocks at strides of~$2$ with channel
+widths $\{32, 64, 96, 128\}$, giving $16\times$ total
+downsampling---followed by a flattened fully-connected head of
+dimension $4096 \rightarrow 256 \rightarrow 8$. The final layer is
+initialized with standard deviation $10^{-3}$ so that the
+predicted residual is approximately zero at initialization. The
+total parameter count is approximately $1.24$M, of which roughly
+$85\%$ lie in the $4096 \rightarrow 256$ fully-connected layer.
+
+The predicted corner offsets are converted into a $3\times 3$
+residual homography $\Delta H$ via a differentiable direct linear
+transform (DLT) solve, which allows gradients to flow through the
+geometric parameterization during training.
+
+We train with a mixed-batch, two-stage schedule. The dataset
+exposes two sample types. \emph{Type~A} is synthetic: we take a
+clean ROI, apply a random $\pm 8$-pixel corner perturbation, and
+supervise the network to predict the inverse perturbation. The
+loss is masked Charbonnier on RGB plus a small corner-L2
+regularizer. \emph{Type~B} is real: two random distinct frames
+from the same track, with no temporal-proximity constraint. The
+loss is a masked normalized cross-correlation (NCC) on luminance
+(shift- and scale-invariant) plus a masked Charbonnier on Sobel
+magnitude (structure-preserving), with the same corner
+regularizer. A per-item \texttt{real\_pair\_fraction} selects
+between the two sample types. Stage~1 trains with 100\%
+Type~A until the synthetic error plateaus; Stage~2 resumes from
+that checkpoint with 70\% Type~B / 30\% Type~A.
+
+At inference, a sanity gate rejects any prediction whose maximum
+corner offset exceeds 16~pixels; rejected detections silently fall
+back to the unrefined baseline homography. We additionally log at
+\texttt{INFO} when at least $10\%$ of a track's predictions
+trigger the rejection gate, which functions as an early warning
+that the reference frame is an outlier for that track.
+
+\subsection{Inpainter backends}
+\label{sec:method:inpainter}
+
+Three of the pipeline's call sites require removing existing text
+from an ROI and filling the background plausibly: S3's
+adaptive-mask pre-inpaint, S4's background isolation for LCM, and
+S5's pre-composite edge cleanup. We support two interchangeable
+backends, summarized in Table~\ref{tab:inpainter}:
+SRNet~\citep{wu2019srnet} reused as a learned text-removal
+network, and a segmentation-based pipeline that combines
+Hi-SAM~\citep{ye2024hisam} for stroke-level text segmentation with
+OpenCV's Navier--Stokes inpainting for the pixel fill. In our
+default configuration Hi-SAM is used in S4, with a small
+three-pixel mask dilation to handle missed thin strokes. Each call
+site instantiates its inpainter independently, so the three can
+use different backends or different configurations without
+affecting one another.
+
+\begin{table}[t]
+  \centering
+  \caption{Inpainter backend tradeoffs.}
+  \label{tab:inpainter}
+  \begin{tabular}{lll}
+    \toprule
+    & SRNet & Hi-SAM + NS inpaint \\
+    \midrule
+    Extra learned weights  & $\sim$500~MB & None (reuses SAM) \\
+    Speed                  & Slower & Faster \\
+    Style generalization   & Training-distribution only & Generic (SAM-based) \\
+    Typical failure        & Residual faint strokes & Missed thin strokes \\
+    Mitigation             & --- & 3\,px mask dilation \\
+    \bottomrule
+  \end{tabular}
+\end{table}
