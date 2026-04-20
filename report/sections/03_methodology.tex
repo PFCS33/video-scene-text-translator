@@ -238,6 +238,19 @@ carrying the adapted pixels and a feathered alpha mask that is
 approximately~$1$ in the interior and falls smoothly to~$0$ over
 the outer $10\%$ of each dimension. The feathering ensures that
 downstream compositing does not produce visible seams.
+Figure~\ref{fig:lcm} shows the end-to-end effect of LCM on a
+sequence of frames with varying illumination.
+
+\figplaceholder{lcm-result}{0.55\linewidth}%
+  {Lighting Correction Module preserves spatially-varying source
+   illumination through translation. Each row shows the English
+   source frame (left) and its Spanish translation rendered by the
+   full pipeline (right). Lighting conditions vary from row to row
+   (hand-cast shadows, directional indoor light, diffuse ambient);
+   the per-pixel ratio map derived from the inpainted background
+   carries the source illumination onto the edited glyph surface
+   in each case.}%
+  {fig:lcm}
 
 \subsection{Stage 5: Revert and Compositing}
 \label{sec:method:s5}
@@ -326,6 +339,19 @@ data-generation tool, using the S2-refined homographies from the
 Alignment Refiner. This alignment ensures that the signal the
 network sees at training time matches the signal it will see at
 inference time.
+Figure~\ref{fig:bpn:training} visualizes the BPN's behaviour on
+evaluation tracks.
+
+\figplaceholder{bpn}{\linewidth}%
+  {BPN training behaviour on two evaluation tracks (GREEN, Coffee).
+   Each row shows, from left to right, the Reference canonical ROI
+   (the sharp input), the Target frame (the actual blurred target),
+   the Predicted output produced by rendering the Reference through
+   the BPN-predicted blur kernel, and the $3\times$-amplified
+   residual between Target and Predicted. Low-amplitude residuals
+   indicate that the predicted parameters reproduce the target's
+   per-frame blur.}%
+  {fig:bpn:training}
 
 \subsection{Alignment Refiner}
 \label{sec:method:refiner}
@@ -369,6 +395,18 @@ back to the unrefined baseline homography. We additionally log at
 \texttt{INFO} when at least $10\%$ of a track's predictions
 trigger the rejection gate, which functions as an early warning
 that the reference frame is an outlier for that track.
+Figure~\ref{fig:refiner:training} visualizes alignment before and
+after the learned residual correction.
+
+\figplaceholder{refiner-network}{\linewidth}%
+  {Alignment Refiner training behaviour. Each cell overlays the
+   reference and target canonical ROIs into the red and green
+   channels of a single image. Residual colour separation indicates
+   pixel-level misalignment left by the classical homography fit;
+   after applying the Refiner's predicted $\Delta H$ the channels
+   fuse toward yellow, showing that per-frame drift has been
+   corrected into the shared canonical space.}%
+  {fig:refiner:training}
 
 \subsection{Inpainter backends}
 \label{sec:method:inpainter}
@@ -392,6 +430,8 @@ affecting one another.
   \centering
   \caption{Inpainter backend tradeoffs.}
   \label{tab:inpainter}
+  \small
+  \setlength{\tabcolsep}{4pt}
   \begin{tabular}{lll}
     \toprule
     & SRNet & Hi-SAM + NS inpaint \\
@@ -404,6 +444,17 @@ affecting one another.
     \bottomrule
   \end{tabular}
 \end{table}
+
+Figure~\ref{fig:inpaint} compares the two backends qualitatively on
+a representative ROI.
+
+\figplaceholder{inpainting}{\linewidth}%
+  {Inpainter backend comparison on the source word ``SHIRTS''. Top
+   row: SRNet, the original learned text-removal network, which
+   occasionally leaves faint glyph residue. Bottom row: our default
+   Hi-SAM stroke segmentation followed by Navier--Stokes inpainting,
+   producing a cleaner fill for the compositing step.}%
+  {fig:inpaint}
 
 \subsection{Method summary}
 \label{sec:method:summary}
