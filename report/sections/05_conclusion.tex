@@ -7,11 +7,14 @@
 We presented a prototype end-to-end system for cross-language scene
 text replacement in video. The system is structured as a five-stage
 pipeline that integrates seven machine-learning models---two of
-which, a Blur Prediction Network and an Alignment Refiner, we
-designed and trained from scratch to address per-frame blur
-adaptation and residual tracking error respectively. The other
-five components (PaddleOCR, CoTracker3, AnyText2, SRNet, and
-Hi-SAM) are pretrained and used through stable interfaces. We
+which we implemented and trained ourselves: an Alignment Refiner
+of our own design that addresses residual tracking error, and a
+Blur Prediction Network that we re-implemented from STRIVE's
+formulation~\citep{subramanian2021strive} (whose code is
+unreleased) with our own backbone, training data, and
+inference-time fixes. The other five components (PaddleOCR,
+CoTracker3, AnyText2, SRNet, and Hi-SAM) are pretrained and used
+through stable interfaces. We
 described each stage in detail, including the engineering decisions
 made to handle long-to-short translations, interchangeable
 background inpainting, and geometric refinement of the canonical
@@ -40,7 +43,7 @@ in the pipeline, and the nature of our own involvement with it.
     SRNet                & S3/S4/S5 inpainting & Pre-trained, used as is \\
     Hi-SAM               & S3/S4/S5 inpainting & Pre-trained, used as is (default backend) \\
     LCM                  & S4 lighting        & Reimplementation of STRIVE's algorithm \\
-    \textbf{BPN}         & S4 blur prediction & \textbf{Trained from scratch} on S2-aligned data \\
+    \textbf{BPN}         & S4 blur prediction & \textbf{Reimplementation of STRIVE's network}, trained on our S2-aligned data \\
     \textbf{Alignment Refiner} & S2 drift correction & \textbf{Designed and trained from scratch} \\
     \bottomrule
   \end{tabular}
@@ -53,7 +56,8 @@ Section~\ref{sec:exp:discussion} argued that the two paradigms
 are complementary rather than competing. We view our specific
 contribution as an open, reproducible reference implementation of
 the glyph-controlled paradigm: a full pipeline, two compact
-networks trained from scratch, and configuration knobs that
+networks (one of our own design and one re-implemented from
+STRIVE) that we trained ourselves, and configuration knobs that
 expose each module for inspection and extension.
 
 The generative paradigm---Sora~\citep{openai2024sora},

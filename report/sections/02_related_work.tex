@@ -42,10 +42,14 @@ frontalize--edit--propagate--composite structure for replacing text
 in video and introduces a Text Propagation Module consisting of a
 Lighting Correction Module and a Blur Prediction Network. STRIVE's
 code has, to our knowledge, never been released, which makes direct
-reproduction impossible; our pipeline's overall shape is informed
-by STRIVE's design philosophy, but the implementation is independent
-and differs in important details (notably the use of a learned
-alignment refiner described in Section~\ref{sec:method:refiner}).
+reproduction impossible; our pipeline's overall shape follows
+STRIVE, as do its two Text Propagation Module components (LCM and
+BPN, Sections~\ref{sec:method:s4} and~\ref{sec:method:bpn}), which
+are re-implementations of the STRIVE algorithms. The implementation
+is independent and differs in several details, the most significant
+being a learned alignment refiner that we designed from scratch
+(Section~\ref{sec:method:refiner}); smaller differences are noted
+in the respective method subsections.
 Beyond STRIVE, we are not aware of a released end-to-end pipeline
 for cross-language video text replacement, which complicates
 quantitative comparison against prior work.

@@ -7,10 +7,12 @@
   approach: a modular five-stage pipeline that explicitly detects,
   tracks, edits, and composites scene text, preserving control over the
   target string at every step. The system integrates seven
-  machine-learning models, of which two---a compact Blur Prediction
-  Network and an Alignment Refiner---we designed and trained
-  ourselves to address per-frame blur adaptation and residual tracking
-  error respectively. We describe the design of each stage, the
+  machine-learning models, of which two we implemented and trained
+  ourselves: an Alignment Refiner of our own design that addresses
+  residual tracking error, and a compact Blur Prediction Network
+  that follows STRIVE's per-frame blur formulation but is
+  re-implemented from scratch (STRIVE's code is unreleased) with
+  our own backbone, training data, and inference-time fixes. We describe the design of each stage, the
   engineering decisions needed to handle long-to-short translations
   and interchangeable background inpainting, and we evaluate on real
   video examples. Results show the feasibility of the approach and

@@ -272,6 +272,22 @@ preferred, but with proper feathering it is rarely needed.
 \subsection{Blur Prediction Network}
 \label{sec:method:bpn}
 
+The BPN follows STRIVE's~\citep{subramanian2021strive} formulation:
+the residual blur operator of Equation~\ref{eq:bpn} below, the
+four-parameter anisotropic-Gaussian parameterization
+$(\sigma_x, \sigma_y, \rho, w)$, the multi-target temporal batching,
+and the two-stage (synthetic-supervised then self-supervised)
+training schedule are all taken from STRIVE. Since STRIVE's code is
+unreleased, every line of our BPN is new---but the algorithmic idea
+is theirs, and we credit it as such. Our own contributions are
+limited to three choices: (i)~the specific network architecture
+(ResNet18 with tiled-weight channel-expansion initialization,
+described below); (ii)~the training data preparation, which relies
+on the Alignment Refiner's S2-refined homographies
+(Section~\ref{sec:method:refiner}) and was generated through our
+own pipeline; and (iii)~one inference-time robustness fix to the
+blur operator for very small ROIs.
+
 The BPN takes the concatenation of a reference canonical ROI and
 $N$ target canonical ROIs along the channel dimension---a total of
 $3(N+1)$ channels; we use $N=3$, giving $12$ channels at
