@@ -430,24 +430,37 @@ network, and a segmentation-based pipeline that combines
 Hi-SAM~\citep{ye2024hisam} for stroke-level text segmentation with
 OpenCV's Navier--Stokes inpainting for the pixel fill. In our
 default configuration Hi-SAM is used in S4, with a small
-three-pixel mask dilation to handle missed thin strokes. Each call
-site instantiates its inpainter independently, so the three can
-use different backends or different configurations without
-affecting one another.
+three-pixel mask dilation to absorb anti-aliased stroke edges; its
+remaining failure mode on blurred text is documented in
+Table~\ref{tab:inpainter}. Each call site instantiates its
+inpainter independently, so the three can use different backends
+or different configurations without affecting one another.
 
 \begin{table}[t]
   \centering
   \caption{Inpainter backend tradeoffs.}
   \label{tab:inpainter}
-  \begin{tabular}{lll}
+  \begin{tabular}{lp{0.28\linewidth}p{0.38\linewidth}}
     \toprule
     & SRNet & Hi-SAM + NS inpaint \\
     \midrule
-    Extra learned weights  & $\sim$500~MB & None (reuses SAM) \\
-    Speed                  & Slower & Faster \\
-    Style generalization   & Training-distribution only & Generic (SAM-based) \\
-    Typical failure        & Residual faint strokes & Missed thin strokes \\
-    Mitigation             & --- & 3\,px mask dilation \\
+    Peak VRAM at inference  & $\sim$200--300\,MB
+        & $\sim$5--7\,GB in fp32, dominated by SAM ViT-L's
+          $1024\times 1024$ forward pass (\textasciitilde{}1.2\,GB of
+          weights plus several GB of attention activations across
+          24 transformer blocks). Drops roughly $2\times$ in fp16 \\
+    Speed                   & Faster (small CNN forward)
+        & Slower (SAM ViT-L backbone dominates per-ROI cost) \\
+    Style generalization    & Training-distribution only
+        & Generic (SAM-based) \\
+    Typical failure         & Residual faint strokes where the text
+        removal is incomplete
+        & Heavily blurred or low-contrast text is under-segmented,
+          leaving a faint, thickened ghost of the original text in
+          the inpainted background \\
+    Mitigation              & ---
+        & 3\,px mask dilation (absorbs anti-aliased stroke edges;
+          does not recover text the segmenter missed entirely) \\
     \bottomrule
   \end{tabular}
 \end{table}
