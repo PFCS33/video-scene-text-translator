@@ -5,18 +5,15 @@
 \label{sec:conclusion:summary}
 
 We presented a prototype end-to-end system for cross-language scene
-text replacement in video. The system is structured as a five-stage
-pipeline that integrates seven machine-learning models---two of
-which, a Blur Prediction Network and an Alignment Refiner, we
-designed and trained from scratch to address per-frame blur
-adaptation and residual tracking error respectively. The other
-five components (PaddleOCR, CoTracker3, AnyText2, SRNet, and
-Hi-SAM) are pretrained and used through stable interfaces. We
-described each stage in detail, including the engineering decisions
-made to handle long-to-short translations, interchangeable
-background inpainting, and geometric refinement of the canonical
-space. Evaluation on real video examples shows the feasibility of
-the approach.
+text replacement in video: a modular five-stage pipeline in which
+two compact networks we designed and trained from scratch (the
+Blur Prediction Network and the Alignment Refiner) sit alongside
+five pretrained components accessed through stable interfaces.
+Evaluation on real video examples shows the feasibility of the
+approach as a strong baseline in the glyph-controlled paradigm,
+complementary to end-to-end generative video editors that
+currently offer superior style preservation at the cost of glyph
+accuracy.
 
 \subsection{Model involvement}
 \label{sec:conclusion:involvement}
@@ -45,27 +42,6 @@ in the pipeline, and the nature of our own involvement with it.
     \bottomrule
   \end{tabular}
 \end{table}
-
-\subsection{Positioning}
-\label{sec:conclusion:framing}
-
-Section~\ref{sec:exp:discussion} argued that the two paradigms
-are complementary rather than competing. We view our specific
-contribution as an open, reproducible reference implementation of
-the glyph-controlled paradigm: a full pipeline, two compact
-networks trained from scratch, and configuration knobs that
-expose each module for inspection and extension.
-
-The generative paradigm---Sora~\citep{openai2024sora},
-Gen-4~Aleph~\citep{runway2025aleph}, and their successors---
-currently achieves superior style preservation and is likely to
-dominate the space as glyph control in those systems matures.
-Until that happens, modular pipelines like ours offer the
-predictable correctness that end-to-end generative models cannot
-yet guarantee. An honest positioning of our work is therefore as a
-reference implementation of one side of this tradeoff and a
-starting point for future hybrid systems, rather than as a direct
-competitor.
 
 \subsection{Future work}
 \label{sec:conclusion:future}

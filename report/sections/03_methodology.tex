@@ -456,36 +456,3 @@ a representative ROI.
    producing a cleaner fill for the compositing step.}%
   {fig:inpaint}
 
-\subsection{Method summary}
-\label{sec:method:summary}
-
-The methodology above rests on three design choices that together
-produce the pipeline's core properties.
-
-\begin{itemize}[leftmargin=*]
-  \item \textbf{Explicit geometric normalization.} Frontalizing
-    every detection into a shared canonical rectangle decouples
-    text editing from perspective distortion, and the learned
-    Alignment Refiner absorbs the small remaining misalignment
-    that optical-flow trackers leave. All downstream stages
-    therefore operate in a pixel-aligned canonical space.
-  \item \textbf{Stage-wise decomposition.} Text generation happens
-    once per track on a single high-quality reference frame;
-    propagation to every other frame is an
-    appearance-adaptation problem (lighting and blur) rather than
-    a re-editing problem. This avoids the per-frame inference
-    cost of generative video editors and removes a major source
-    of temporal flicker.
-  \item \textbf{Appearance-aware propagation.} The Lighting
-    Correction Module handles spatially-varying illumination via
-    per-pixel ratio maps computed on inpainted backgrounds;
-    the Blur Prediction Network handles per-frame motion and
-    focus blur via a compact learned predictor. The two target
-    complementary axes of appearance variation.
-\end{itemize}
-
-Together, this decomposition produces temporally consistent
-cross-language scene text replacement without per-frame generative
-inference, while keeping every intermediate representation
-(canonical ROIs, homography matrices, lighting ratio maps, blur
-parameters) inspectable and individually controllable.
