@@ -106,12 +106,21 @@ For each grouped track we translate the source string once using
 \texttt{deep-translator} with a Google translation backend and a
 MyMemory fallback (with locale-code mapping, since MyMemory
 expects \texttt{en-GB} rather than \texttt{en} and \texttt{zh-CN}
-cased exactly so). Between OCR-detected frames, quads are filled by
-optical flow. We support classical Farneback flow as a CPU
+cased exactly so). Between-frame quad geometry is handled by
+optical flow rather than by stitching per-frame OCR detections: in
+our primary configuration (\texttt{full\_propagation}) the
+reference quad (see below) is propagated to every frame of the
+track, and the per-frame OCR quads are used only as track-identity
+anchors, which avoids inheriting OCR's per-frame geometric noise
+into the downstream pipeline. (A \texttt{gaps\_only} mode that
+interpolates flow only where OCR missed a frame is also available
+but not the default.) We support classical Farneback flow as a CPU
 fallback, and CoTracker3~\citep{karaev2024cotracker3} online mode
 as the default; the latter tracks the four corners of each quad
 via a learned point tracker in sliding 60-frame windows, producing
-substantially smoother trajectories than classical methods.
+substantially smoother trajectories than classical methods and,
+in our measurements, running markedly faster than the CPU
+Farneback fallback on a GPU host.
 
 The final step of S1 selects, for each track, a \emph{reference
 frame}: the frame at which we will perform the actual text edit.
@@ -261,13 +270,18 @@ cleanup---are independent instances with independent
 configurations, allowing, for example, a Hi-SAM backend in S4
 paired with an SRNet backend in S5.
 
-Compositing itself is feathered alpha blending by default:
+Compositing itself uses Poisson blending via
+\texttt{cv2.seamlessClone}~\citep{perez2003poisson} by default:
+the warped ROI is pasted so its gradient field matches the
+destination frame's ambient gradients at the boundary, which
+disguises residual lighting mismatches that plain alpha blending
+would expose as a visible seam. Feathered alpha blending
 $F' = F\,(1-\alpha) + R\,\alpha$, where $F$ is the original frame,
 $R$ is the warped propagated ROI, and $\alpha$ is the feathered
-alpha mask from S4. A Poisson-blending
-fallback~\citep{perez2003poisson} based on \texttt{cv2.seamlessClone}
-is available for cases where gradient-domain seam matching is
-preferred, but with proper feathering it is rarely needed.
+alpha mask from S4, is used as a fallback when the source cannot
+be pasted entirely within the destination frame centered on the
+paste location---an edge case that arises for ROIs near the frame
+border.
 
 \subsection{Blur Prediction Network}
 \label{sec:method:bpn}
