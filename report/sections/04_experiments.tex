@@ -24,11 +24,9 @@ pipeline produces correct target glyphs, preserves perspective and
 scale, and adapts to per-frame lighting and blur well enough for
 the result to read as part of the original scene.
 Module-level evidence for each of these properties is given in the
-methodology section --- Figure~\ref{fig:lcm} for lighting,
+methodology section: Figure~\ref{fig:lcm} for lighting,
 Figure~\ref{fig:bpn:training} for blur, and
-Figure~\ref{fig:refiner:training} for alignment --- and the
-per-component ablations in Section~\ref{sec:exp:ablation}
-quantify the contribution of each learned module.
+Figure~\ref{fig:refiner:training} for alignment.
 
 \figplaceholder{results_overview}{\linewidth}%
   {Gallery of representative end-to-end results from the full
@@ -89,62 +87,6 @@ side.
    a head-to-head benchmark. \emph{Placeholder.}}%
   {fig:glyph:comparison}
 
-\subsection{Module ablations}
-\label{sec:exp:ablation}
-
-To assess the contribution of the individual components we designed
-or tuned, we disable them one at a time and measure three
-quantitative metrics on a representative video set:
-(i)~\emph{OCR readback accuracy}, defined as PaddleOCR's
-string-level match rate when re-detecting the translated text in
-our output; (ii)~\emph{background SSIM}~\citep{wang2004ssim}
-measured outside the text alpha mask, which captures whether the
-pipeline damages surrounding scene pixels; and (iii)~\emph{quad
-jitter}, the mean per-frame corner displacement of the final
-composite, which captures temporal stability.
-Qualitative evidence for each learned component is already present
-in the methodology section:
-Figure~\ref{fig:bpn:training} for the BPN,
-Figure~\ref{fig:refiner:training} for the Alignment Refiner,
-Figure~\ref{fig:lcm} for the Lighting Correction Module,
-and Figure~\ref{fig:inpaint} for the inpainter backends.
-Table~\ref{tab:ablation} summarizes the quantitative contribution
-of each component.
-
-\begin{table}[H]
-  \centering
-  \caption{Module ablations on a representative video set. Each row
-    disables a single component of the pipeline.
-    OCR readback: PaddleOCR re-detection accuracy on output frames.
-    Background SSIM: structural similarity in non-text regions.
-    Quad jitter: mean per-frame corner displacement (lower is more
-    temporally stable). \emph{All numbers below are placeholders to
-    be filled with measured values.}}
-  \label{tab:ablation}
-  \small
-  \setlength{\tabcolsep}{4pt}
-  \begin{tabular}{lccc}
-    \toprule
-    Configuration & OCR readback $\uparrow$ & Background SSIM $\uparrow$ & Quad jitter (px) $\downarrow$ \\
-    \midrule
-    Full pipeline                    & XX.X & X.XX & X.X \\
-    w/o Alignment Refiner            & XX.X & X.XX & X.X \\
-    w/o BPN (LCM only)               & XX.X & X.XX & X.X \\
-    w/o LCM (histogram match only)   & XX.X & X.XX & X.X \\
-    w/o adaptive mask                & XX.X & X.XX & --- \\
-    \bottomrule
-  \end{tabular}
-\end{table}
-
-We expect the strongest effects to fall on temporal stability
-(Alignment Refiner) and readback accuracy (adaptive mask), since
-these target the most direct failure modes of a naive pipeline.
-Disabling the BPN removes per-frame blur matching and leaves the
-composited text uniformly sharp; we expect this to show as a
-modest average SSIM gap that understates the perceptual cost,
-because motion blur concentrates on a small set of high-motion
-frames that averaging tends to hide.
-
 \subsection{Analysis and insights}
 \label{sec:exp:analysis}
 
@@ -153,13 +95,13 @@ each leave a measurable or visible trace in the results above.
 
 \begin{itemize}[leftmargin=*]
   \item \textbf{Explicit geometric normalization reduces temporal
-    jitter.} The Alignment Refiner's contribution in the
-    quad-jitter column of Table~\ref{tab:ablation} makes concrete
-    the cost of residual tracker error: correcting a few pixels
-    of drift per frame propagates into a visibly more stable
-    composite. The training-time view in
-    Figure~\ref{fig:refiner:training} shows the same correction at
-    the ROI level.
+    jitter.} Figure~\ref{fig:refiner:training} shows the Alignment
+    Refiner collapsing the per-frame misalignment left by the
+    classical homography fit: the red/green channel separation
+    visible in the pre-refinement overlays disappears after the
+    learned residual correction. Correcting even a few pixels of
+    drift per frame propagates into a visibly more stable
+    composite downstream.
   \item \textbf{Stage-wise decomposition concentrates effort
     where it matters.} Editing is applied once per track at a
     carefully chosen reference frame rather than independently on
@@ -196,12 +138,12 @@ controllability and glyph-level fidelity. Generative models
 produce visually compelling outputs, but at the time of writing
 they do not offer guarantees on target-string accuracy or precise
 spatial alignment. The comparison in
-Section~\ref{sec:exp:glyph} and the ablations in
-Section~\ref{sec:exp:ablation} together suggest that explicitly
-modelling geometry and appearance propagation is a viable route
-when correct glyphs matter, while the naturalistic qualities of
-generative systems remain harder to match with explicit
-compositing. A reasonable reading of these observations is that
+Section~\ref{sec:exp:glyph} and the per-module qualitative
+evidence in the methodology section together suggest that
+explicitly modelling geometry and appearance propagation is a
+viable route when correct glyphs matter, while the naturalistic
+qualities of generative systems remain harder to match with
+explicit compositing. A reasonable reading of these observations is that
 the two approaches are complementary rather than competing, and
 that hybrid systems---generative backgrounds and style with
 glyph-controlled text compositing---are a promising long-term
