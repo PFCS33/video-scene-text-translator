@@ -70,31 +70,6 @@ per-frame corner displacement of the final composite, which
 captures temporal stability. Table~\ref{tab:ablation} summarizes
 the results.
 
-\begin{table}[t]
-  \centering
-  \caption{Module ablations on a representative video set. Each row
-    disables a single component of the pipeline.
-    OCR readback: PaddleOCR re-detection accuracy on output frames.
-    Background SSIM: structural similarity in non-text regions.
-    Quad jitter: mean per-frame corner displacement (lower is more
-    temporally stable). \emph{All numbers below are placeholders to
-    be filled with measured values.}}
-  \label{tab:ablation}
-  \small
-  \setlength{\tabcolsep}{4pt}
-  \begin{tabular}{lccc}
-    \toprule
-    Configuration & OCR readback $\uparrow$ & Background SSIM $\uparrow$ & Quad jitter (px) $\downarrow$ \\
-    \midrule
-    Full pipeline                    & XX.X & X.XX & X.X \\
-    w/o Alignment Refiner            & XX.X & X.XX & X.X \\
-    w/o BPN (LCM only)               & XX.X & X.XX & X.X \\
-    w/o LCM (histogram match only)   & XX.X & X.XX & X.X \\
-    w/o adaptive mask                & XX.X & X.XX & --- \\
-    \bottomrule
-  \end{tabular}
-\end{table}
-
 We expect the strongest effects to fall on temporal stability
 (Alignment Refiner) and readback accuracy (adaptive mask), since
 these target the most direct failure modes of a naive pipeline.
@@ -126,6 +101,31 @@ tends to hide.
    with LCM applying a per-pixel ratio map derived from the
    inpainted backgrounds.}%
   {fig:abl:lcm}
+
+\begin{table}[H]
+  \centering
+  \caption{Module ablations on a representative video set. Each row
+    disables a single component of the pipeline.
+    OCR readback: PaddleOCR re-detection accuracy on output frames.
+    Background SSIM: structural similarity in non-text regions.
+    Quad jitter: mean per-frame corner displacement (lower is more
+    temporally stable). \emph{All numbers below are placeholders to
+    be filled with measured values.}}
+  \label{tab:ablation}
+  \small
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{lccc}
+    \toprule
+    Configuration & OCR readback $\uparrow$ & Background SSIM $\uparrow$ & Quad jitter (px) $\downarrow$ \\
+    \midrule
+    Full pipeline                    & XX.X & X.XX & X.X \\
+    w/o Alignment Refiner            & XX.X & X.XX & X.X \\
+    w/o BPN (LCM only)               & XX.X & X.XX & X.X \\
+    w/o LCM (histogram match only)   & XX.X & X.XX & X.X \\
+    w/o adaptive mask                & XX.X & X.XX & --- \\
+    \bottomrule
+  \end{tabular}
+\end{table}
 
 \subsection{Adaptive mask for long-to-short translation}
 \label{sec:exp:adaptive}

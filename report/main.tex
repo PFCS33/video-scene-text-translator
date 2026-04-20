@@ -70,7 +70,7 @@
 % visible framed box so the LaTeX compiles before real images arrive.
 % Usage: \figplaceholder{filename}{width}{caption}{label}
 \newcommand{\figplaceholder}[4]{%
-  \begin{figure}[t]
+  \begin{figure}[H]
     \centering
     \IfFileExists{figures/#1.pdf}%
       {\includegraphics[width=#2]{figures/#1.pdf}}%
