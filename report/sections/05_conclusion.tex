@@ -74,21 +74,36 @@ Several directions follow naturally from the design decisions and
 limitations described above.
 
 \begin{itemize}[leftmargin=*]
-  \item \textbf{Hybrid generative plus glyph-controlled
-    compositing.} The most promising long-term direction: use a
-    generative video model for the background and style layer, and
-    a glyph-controlled pipeline such as ours for the text layer,
-    combining the strengths of both paradigms.
+  \item \textbf{Stronger detection filtering.} The S1 detection
+    stage still lets through two kinds of unwanted detections that
+    the current wordfreq-based Zipf filter does not catch:
+    short real words recognized on textured or geometric
+    backgrounds (false positives that happen to look like common
+    English), and genuine but unwanted on-screen text such as
+    watermarks, timestamps, and tiny background signage. Both
+    cause the downstream pipeline to spend effort on regions that
+    should not be translated, and in the worst case introduce
+    visible artifacts in the final composite. Promising directions
+    include a learned detection-confidence head tuned for this
+    task, a track-lifetime filter that requires a detection to
+    persist across several frames before entering the translation
+    pipeline, and per-region saliency cues to suppress
+    peripheral text.
+  \item \textbf{Occlusion handling in compositing.} The current
+    S5 compositing step paints the translated ROI over every pixel
+    inside the target quad, including any foreground object---a
+    hand, a passing vehicle, foliage---that happens to occlude the
+    text surface in a given frame. A concrete extension reuses the
+    Hi-SAM infrastructure we already vendor: segment foreground
+    objects inside the target bbox, subtract their masks from the
+    per-frame alpha mask so the composite never paints over them,
+    and propagate the mask across frames with the same CoTracker
+    machinery used for quad corners.
   \item \textbf{Temporal smoothing of the refiner's predictions.}
     The Alignment Refiner currently predicts $\Delta H$ per frame
     independently, leaving small inter-frame micro-oscillations.
     Smoothing over a short temporal window of predicted corner
     offsets is a natural extension.
-  \item \textbf{Strengthened rotation signal for the BPN.} The BPN
-    tends to predict $\rho \approx 0$ on real data, indicating
-    weak signal for rotated blur. Enriching the training
-    distribution with oriented blur pairs would improve
-    blur-matched compositing for fast-moving subjects.
   \item \textbf{Streaming main pipeline for long videos.} The main
     pipeline currently loads all video frames into memory, which
     limits it to short clips. A streaming architecture already
