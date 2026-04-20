@@ -573,6 +573,136 @@ describe("useJobStream — active-stage tick", () => {
     expect(result.current.state.activeStageElapsedMs).toBe(5000);
   });
 
+  // --------------------------------------------------------------------
+  // stalledMs — derived from the same tick as activeStageElapsedMs.
+  // Threshold lives in `lib/stages.ts` (STALL_THRESHOLD_MS = 180_000);
+  // tests advance past it with a comfortable margin so a future
+  // threshold tweak doesn't silently invalidate the assertions.
+  // --------------------------------------------------------------------
+
+  it("starts with stalledMs = 0 and stays 0 below STALL_THRESHOLD_MS", async () => {
+    const { result } = renderHook(() => useJobStream("job-1"));
+    await waitFor(() => expect(capturedOptions).not.toBeNull());
+
+    expect(result.current.state.stalledMs).toBe(0);
+
+    act(() => {
+      capturedOptions!.onEvent({ type: "stage_start", stage: "s3", ts: 1 });
+    });
+    // Still 0 immediately after stage_start.
+    expect(result.current.state.stalledMs).toBe(0);
+
+    // 60s below threshold → still 0.
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+    expect(result.current.state.stalledMs).toBe(0);
+  });
+
+  it("reports stalledMs = elapsed - STALL_THRESHOLD_MS once the threshold is crossed", async () => {
+    const { result } = renderHook(() => useJobStream("job-1"));
+    await waitFor(() => expect(capturedOptions).not.toBeNull());
+
+    act(() => {
+      capturedOptions!.onEvent({ type: "stage_start", stage: "s3", ts: 1 });
+    });
+
+    // Advance well past the 180s threshold — 195s total, expect 15s stall.
+    act(() => {
+      vi.advanceTimersByTime(195_000);
+    });
+
+    expect(result.current.state.activeStageElapsedMs).toBe(195_000);
+    expect(result.current.state.stalledMs).toBe(15_000);
+
+    // Another 10s accumulates into the stall readout.
+    act(() => {
+      vi.advanceTimersByTime(10_000);
+    });
+    expect(result.current.state.stalledMs).toBe(25_000);
+  });
+
+  it("resets stalledMs to 0 on stage_complete", async () => {
+    const { result } = renderHook(() => useJobStream("job-1"));
+    await waitFor(() => expect(capturedOptions).not.toBeNull());
+
+    act(() => {
+      capturedOptions!.onEvent({ type: "stage_start", stage: "s2", ts: 1 });
+    });
+    act(() => {
+      vi.advanceTimersByTime(200_000);
+    });
+    expect(result.current.state.stalledMs).toBeGreaterThan(0);
+
+    act(() => {
+      capturedOptions!.onEvent({
+        type: "stage_complete",
+        stage: "s2",
+        duration_ms: 200_000,
+        ts: 2,
+      });
+    });
+    expect(result.current.state.stalledMs).toBe(0);
+  });
+
+  it("resets stalledMs to 0 on done", async () => {
+    const { result } = renderHook(() => useJobStream("job-1"));
+    await waitFor(() => expect(capturedOptions).not.toBeNull());
+
+    act(() => {
+      capturedOptions!.onEvent({ type: "stage_start", stage: "s5", ts: 1 });
+    });
+    act(() => {
+      vi.advanceTimersByTime(200_000);
+    });
+    expect(result.current.state.stalledMs).toBeGreaterThan(0);
+
+    act(() => {
+      capturedOptions!.onEvent({
+        type: "done",
+        output_url: "/api/jobs/job-1/output",
+        ts: 99,
+      });
+    });
+    expect(result.current.state.stalledMs).toBe(0);
+  });
+
+  it("resets stalledMs to 0 on error", async () => {
+    const { result } = renderHook(() => useJobStream("job-1"));
+    await waitFor(() => expect(capturedOptions).not.toBeNull());
+
+    act(() => {
+      capturedOptions!.onEvent({ type: "stage_start", stage: "s3", ts: 1 });
+    });
+    act(() => {
+      vi.advanceTimersByTime(200_000);
+    });
+    expect(result.current.state.stalledMs).toBeGreaterThan(0);
+
+    act(() => {
+      capturedOptions!.onEvent({ type: "error", message: "boom", ts: 7 });
+    });
+    expect(result.current.state.stalledMs).toBe(0);
+  });
+
+  it("reset() clears stalledMs back to 0", async () => {
+    const { result } = renderHook(() => useJobStream("job-1"));
+    await waitFor(() => expect(capturedOptions).not.toBeNull());
+
+    act(() => {
+      capturedOptions!.onEvent({ type: "stage_start", stage: "s2", ts: 1 });
+    });
+    act(() => {
+      vi.advanceTimersByTime(200_000);
+    });
+    expect(result.current.state.stalledMs).toBeGreaterThan(0);
+
+    act(() => {
+      result.current.reset();
+    });
+    expect(result.current.state.stalledMs).toBe(0);
+  });
+
   it("clears the ticker on unmount (no orphan interval leak)", async () => {
     const { unmount } = renderHook(() => useJobStream("job-1"));
     await waitFor(() => expect(capturedOptions).not.toBeNull());

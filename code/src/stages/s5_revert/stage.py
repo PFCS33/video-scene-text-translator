@@ -10,6 +10,7 @@ compositing.
 from __future__ import annotations
 
 import logging
+import time
 
 import cv2
 import numpy as np
@@ -529,18 +530,40 @@ class RevertStage:
                     ref_canonical = ref_roi_by_track.get(prop_roi.track_id)
                     if ref_canonical is not None:
                         refine_total += 1
+                        # Per-ROI detail kept at DEBUG to avoid flooding
+                        # <LogPanel> across hundreds of detections; the
+                        # user-visible signal is the per-track INFO +
+                        # 30s heartbeat in Pass 2 below.
+                        logger.debug(
+                            "S5 refiner: predict track %d frame %d",
+                            prop_roi.track_id, frame_idx,
+                        )
+                        t_refine_start = time.monotonic()
                         try:
                             delta_H = self._refiner.predict_delta_H(  # type: ignore[union-attr]
                                 ref_canonical,
                                 prop_roi.target_roi_canonical,
                             )
                         except Exception as exc:  # noqa: BLE001
-                            logger.debug(
-                                "S5 refiner: predict_delta_H raised %s; "
+                            # Upgrade to WARNING with elapsed so a stuck
+                            # predict surfaces in <LogPanel> instead of
+                            # being hidden at DEBUG level.
+                            logger.warning(
+                                "S5 refiner: predict_delta_H raised %s "
+                                "after %.1fs (track %d frame %d); "
                                 "falling back to identity",
                                 exc,
+                                time.monotonic() - t_refine_start,
+                                prop_roi.track_id, frame_idx,
                             )
                             delta_H = None
+                        else:
+                            logger.debug(
+                                "S5 refiner: predict track %d frame %d "
+                                "done in %.2fs",
+                                prop_roi.track_id, frame_idx,
+                                time.monotonic() - t_refine_start,
+                            )
                         if delta_H is None:
                             refine_rejected += 1
 
@@ -605,12 +628,42 @@ class RevertStage:
             disable=not self.config.pre_inpaint,
         )
 
+        # Heartbeat + per-track-entry state for Pass 2. The outer loop
+        # iterates frames, not tracks, so "per-track INFO" fires on the
+        # first frame each track_id is seen — matching the S4 spirit
+        # while respecting the frame-major loop structure.
+        heartbeat_interval_s = 30.0
+        t_pass2_start = time.monotonic()
+        t_heartbeat_last = t_pass2_start
+        total_frames = len(sorted_idxs)
+        tracks_seen: set[int] = set()
+
         output_frames = []
-        for frame_idx in sorted_idxs:
+        for frame_pos, frame_idx in enumerate(sorted_idxs, start=1):
             frame = frames[frame_idx].copy()
+
+            # 30s heartbeat inside Pass 2. Time-based trigger so a slow
+            # seamlessClone / pre-inpaint still surfaces.
+            now = time.monotonic()
+            if now - t_heartbeat_last >= heartbeat_interval_s:
+                logger.info(
+                    "S5 composite: frame %d/%d, elapsed %.0fs",
+                    frame_pos, total_frames, now - t_pass2_start,
+                )
+                t_heartbeat_last = now
 
             for prop_roi in propagated_rois.get(frame_idx, []):
                 pbar.update(1)
+                # Log first-seen BEFORE guards so the reported frame is the
+                # track's earliest appearance in propagated_rois, even when
+                # the earliest frames have invalid homography.
+                if prop_roi.track_id not in tracks_seen:
+                    tracks_seen.add(prop_roi.track_id)
+                    logger.info(
+                        "S5 composite: track id=%d (first seen at frame %d)",
+                        prop_roi.track_id, frame_idx,
+                    )
+
                 track = tracks_by_id.get(prop_roi.track_id)
                 if track is None:
                     continue
@@ -677,12 +730,20 @@ class RevertStage:
                     frame_quad = self._project_canonical_to_frame(
                         H_eff, can_corners,
                     )
+                    # Wrap _pre_inpaint_region with elapsed timing. Upgrade
+                    # the existing DEBUG to WARNING so a stuck inpaint is
+                    # visible in <LogPanel> instead of hidden. Still
+                    # non-fatal — pre-inpaint failure falls through to
+                    # plain composite.
+                    t_preinp_start = time.monotonic()
                     try:
                         frame = self._pre_inpaint_region(frame, frame_quad)
                     except Exception as exc:  # noqa: BLE001
-                        logger.debug(
-                            "S5: pre-inpaint failed for track %d frame %d: %s",
-                            prop_roi.track_id, frame_idx, exc,
+                        logger.warning(
+                            "S5: pre-inpaint failed for track %d frame %d "
+                            "after %.1fs: %s",
+                            prop_roi.track_id, frame_idx,
+                            time.monotonic() - t_preinp_start, exc,
                         )
 
                 if _REFINER_DIAGNOSTIC_BLUE:
@@ -690,9 +751,23 @@ class RevertStage:
                         frame, warped_roi, warped_alpha, target_bbox
                     )
                 else:
-                    frame = self.composite_roi_into_frame_seamless(
-                        frame, warped_roi, warped_alpha, target_bbox
-                    )
+                    # Wrap seamlessClone. A numerically bad mask / extreme
+                    # warp can trigger cv2.error; log elapsed + context
+                    # before re-raising so the existing stage error path
+                    # fires with diagnostic info.
+                    t_comp_start = time.monotonic()
+                    try:
+                        frame = self.composite_roi_into_frame_seamless(
+                            frame, warped_roi, warped_alpha, target_bbox
+                        )
+                    except Exception:
+                        elapsed = time.monotonic() - t_comp_start
+                        logger.exception(
+                            "S5: seamlessClone failed for track %d frame %d "
+                            "after %.2fs",
+                            prop_roi.track_id, frame_idx, elapsed,
+                        )
+                        raise
 
             output_frames.append(frame)
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 import time
 import types
 from pathlib import Path
@@ -26,8 +27,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from server.app.pipeline_runner import (
+    _LivenessWatchdog,
     _parse_stage_event,
     _PipelineLogHandler,
+    _read_liveness_timeout,
     _transcode_to_browser_safe,
     run_pipeline_job,
 )
@@ -652,3 +655,256 @@ def test_run_pipeline_skips_transcode_when_output_missing(
     assert transcode_calls == []
     dones = [e for e in collected if isinstance(e, DoneEvent)]
     assert len(dones) == 1
+
+
+# ---------------------------------------------------------------------------
+# _LivenessWatchdog — plan.md Step 3, layer 2
+#
+# Purpose: a daemon thread that watches for emit() going silent and logs an
+# ERROR record when the gap exceeds PIPELINE_LIVENESS_TIMEOUT_S. These tests
+# use a 1s timeout (via monkeypatch.setenv) to keep runtime short. The
+# _LivenessWatchdog clamps its poll interval to `timeout_s / 2` when the
+# timeout is small, so a 1s timeout polls twice per second — short tests
+# complete in 2-4 seconds each.
+#
+# The watchdog is log-only: no ErrorEvent, no status mutation, no cancel.
+# These tests verify that invariant by asserting on the record type / level
+# and checking that DoneEvent still fires on normal completion.
+# ---------------------------------------------------------------------------
+
+
+def test_read_liveness_timeout_default(monkeypatch):
+    monkeypatch.delenv("PIPELINE_LIVENESS_TIMEOUT_S", raising=False)
+    assert _read_liveness_timeout() == 180.0
+
+
+def test_read_liveness_timeout_env_override(monkeypatch):
+    monkeypatch.setenv("PIPELINE_LIVENESS_TIMEOUT_S", "42.5")
+    assert _read_liveness_timeout() == 42.5
+
+
+def test_read_liveness_timeout_invalid_falls_back(monkeypatch):
+    monkeypatch.setenv("PIPELINE_LIVENESS_TIMEOUT_S", "not-a-number")
+    assert _read_liveness_timeout() == 180.0
+
+
+def test_read_liveness_timeout_nonpositive_falls_back(monkeypatch):
+    monkeypatch.setenv("PIPELINE_LIVENESS_TIMEOUT_S", "0")
+    assert _read_liveness_timeout() == 180.0
+    monkeypatch.setenv("PIPELINE_LIVENESS_TIMEOUT_S", "-5")
+    assert _read_liveness_timeout() == 180.0
+
+
+def test_watchdog_fires_after_silence():
+    """Silence longer than timeout → ERROR log fires.
+
+    Uses an isolated logger (not ``src``) so the assertion is tight and
+    doesn't pick up noise from parallel tests. Timeout is 1s, we sleep 2s
+    without calling notify().
+    """
+    test_logger = logging.getLogger(f"test.watchdog.{id(object())}")
+    test_logger.setLevel(logging.ERROR)
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):  # noqa: A003
+            records.append(record)
+
+    h = _Capture()
+    test_logger.addHandler(h)
+    try:
+        wd = _LivenessWatchdog(test_logger, timeout_s=1.0)
+        wd.start()
+        time.sleep(2.0)
+        wd.stop()
+    finally:
+        test_logger.removeHandler(h)
+
+    # Should have at least one ERROR record with the expected message shape.
+    assert len(records) >= 1, "watchdog never fired after 2s silence"
+    for r in records:
+        assert r.levelno == logging.ERROR
+        # Uses %-formatting; getMessage() resolves it.
+        assert "no progress" in r.getMessage()
+
+
+def test_watchdog_resets_on_notify():
+    """Periodic notify() keeps the clock reset → no fires.
+
+    Calls notify() every 0.3s for 2s with a 1s timeout. The gap never
+    reaches 1s, so the watchdog never fires.
+    """
+    test_logger = logging.getLogger(f"test.watchdog.{id(object())}")
+    test_logger.setLevel(logging.ERROR)
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):  # noqa: A003
+            records.append(record)
+
+    h = _Capture()
+    test_logger.addHandler(h)
+    try:
+        wd = _LivenessWatchdog(test_logger, timeout_s=1.0)
+        wd.start()
+        # Hit notify() 6 times at 0.3s intervals → 1.8s of activity.
+        for _ in range(6):
+            time.sleep(0.3)
+            wd.notify()
+        wd.stop()
+    finally:
+        test_logger.removeHandler(h)
+
+    assert records == [], (
+        f"watchdog fired despite periodic notify(): {[r.getMessage() for r in records]}"
+    )
+
+
+def test_watchdog_suppresses_repeat_fires_within_window():
+    """3 timeout windows of silence → ~3 fires, not continuous.
+
+    With timeout_s=1.0 and 3s of silence, the watchdog's internal window
+    counter should produce exactly 3 fires (one per crossing of the
+    1s, 2s, 3s boundary). The poll interval is clamped to timeout/2=0.5s,
+    so a naive "fire on every tick" implementation would produce ~6 fires.
+    The test asserts a tight upper bound (<= 4) to catch regressions.
+    """
+    test_logger = logging.getLogger(f"test.watchdog.{id(object())}")
+    test_logger.setLevel(logging.ERROR)
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):  # noqa: A003
+            records.append(record)
+
+    h = _Capture()
+    test_logger.addHandler(h)
+    try:
+        wd = _LivenessWatchdog(test_logger, timeout_s=1.0)
+        wd.start()
+        time.sleep(3.2)  # a hair past 3s to ensure the 3rd window tripped
+        wd.stop()
+    finally:
+        test_logger.removeHandler(h)
+
+    # At least 2 fires (windows 1 and 2), at most 4 (windows 1-3 + some
+    # slack for scheduler jitter). Zero would mean the watchdog never ran
+    # and 10+ would mean we're spamming every poll tick — both regressions.
+    assert 2 <= len(records) <= 4, (
+        f"expected ~3 fires for 3s silence with 1s timeout, got {len(records)}: "
+        f"{[r.getMessage() for r in records]}"
+    )
+
+
+def test_watchdog_stops_cleanly_on_success(tmp_path: Path, monkeypatch):
+    """Normal run → watchdog thread is joined, no orphan daemon thread."""
+    monkeypatch.setenv("PIPELINE_LIVENESS_TIMEOUT_S", "1")
+    _install_fake_config(monkeypatch)
+    _install_fake_pipeline(monkeypatch, _make_stage_emitter_pipeline([]))
+
+    before = {t.name for t in threading.enumerate()}
+
+    run_pipeline_job(
+        job_id="j1",
+        input_path=tmp_path / "in.mp4",
+        output_path=tmp_path / "out.mp4",
+        source_lang="en",
+        target_lang="es",
+        emit=lambda e: None,
+    )
+
+    # Give the join a moment to settle even though stop() should have
+    # already joined synchronously. Any orphan is a real leak.
+    time.sleep(0.1)
+    after = {t.name for t in threading.enumerate()}
+    orphans = {
+        n for n in (after - before) if n == "pipeline-liveness-watchdog"
+    }
+    assert orphans == set(), f"watchdog thread leaked after success: {orphans}"
+
+
+def test_watchdog_stops_cleanly_on_exception(tmp_path: Path, monkeypatch):
+    """Pipeline raises → watchdog is still stopped in the finally block."""
+    monkeypatch.setenv("PIPELINE_LIVENESS_TIMEOUT_S", "1")
+    _install_fake_config(monkeypatch)
+
+    class CrashingPipeline:
+        def __init__(self, config, progress_callback=None):
+            pass
+
+        def run(self):
+            raise RuntimeError("boom")
+
+    _install_fake_pipeline(monkeypatch, CrashingPipeline)
+    before = {t.name for t in threading.enumerate()}
+
+    with pytest.raises(RuntimeError, match="boom"):
+        run_pipeline_job(
+            job_id="j1",
+            input_path=tmp_path / "in.mp4",
+            output_path=tmp_path / "out.mp4",
+            source_lang="en",
+            target_lang="es",
+            emit=lambda e: None,
+        )
+
+    time.sleep(0.1)
+    after = {t.name for t in threading.enumerate()}
+    orphans = {
+        n for n in (after - before) if n == "pipeline-liveness-watchdog"
+    }
+    assert orphans == set(), (
+        f"watchdog thread leaked after exception: {orphans}"
+    )
+
+
+def test_watchdog_fires_during_run_when_pipeline_hangs(
+    tmp_path: Path, monkeypatch,
+):
+    """End-to-end: a slow pipeline run surfaces a watchdog ERROR LogEvent.
+
+    This is the integration test that proves the whole chain is wired:
+    watchdog fires → src_logger.error → _PipelineLogHandler → LogEvent →
+    forwarded through emit → captured by the test sink.
+    """
+    monkeypatch.setenv("PIPELINE_LIVENESS_TIMEOUT_S", "1")
+    _install_fake_config(monkeypatch)
+
+    class HangingPipeline:
+        def __init__(self, config, progress_callback=None):
+            pass
+
+        def run(self):
+            # Silent sleep longer than the timeout — no progress_callback,
+            # no log records from our side.
+            time.sleep(2.0)
+
+    _install_fake_pipeline(monkeypatch, HangingPipeline)
+    collected: list[SSEEvent] = []
+
+    run_pipeline_job(
+        job_id="j1",
+        input_path=tmp_path / "in.mp4",
+        output_path=tmp_path / "out.mp4",
+        source_lang="en",
+        target_lang="es",
+        emit=collected.append,
+    )
+
+    # At least one LogEvent with level=error and the watchdog message.
+    log_events = [e for e in collected if isinstance(e, LogEvent)]
+    watchdog_errors = [
+        e for e in log_events
+        if e.level == "error" and "no progress" in e.message
+    ]
+    assert len(watchdog_errors) >= 1, (
+        f"watchdog never surfaced via SSE; got log events: "
+        f"{[(e.level, e.message) for e in log_events]}"
+    )
+    # And the run still completed normally — DoneEvent fires because the
+    # watchdog is log-only, not a cancel.
+    assert any(isinstance(e, DoneEvent) for e in collected), (
+        "DoneEvent missing — watchdog should be log-only, not a cancel"
+    )
+    # No ErrorEvent was synthesized by the runner (that's JobManager's job).
+    assert not any(isinstance(e, ErrorEvent) for e in collected)

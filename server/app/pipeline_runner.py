@@ -32,6 +32,25 @@ Design (plan.md D10, D11, D13, R6):
   import time so the lazy imports below find the pipeline package without
   re-running ``scripts/run_pipeline.py``-style bootstrap inside each
   function. See ``code/scripts/run_pipeline.py`` for the pattern.
+
+Liveness watchdog (plan.md Step 3, layer 2):
+
+    ``_LivenessWatchdog`` is a daemon thread started on runner entry and
+    stopped in the same ``finally`` that detaches the log handler. It
+    tracks ``time.monotonic() - last_emit_ts`` and, when the gap exceeds
+    ``PIPELINE_LIVENESS_TIMEOUT_S`` (default 180s, env-overridable),
+    fires ``src_logger.error("no progress for %.0fs ...")``. That record
+    flows through ``_PipelineLogHandler`` → ``LogEvent`` → SSE ``log``
+    event → ``<LogPanel>``, surfacing stalled stages in the browser
+    without adding any new event type or endpoint.
+
+    The watchdog is **log-only**. It does NOT emit ``ErrorEvent``, does
+    NOT mutate ``record.status``, does NOT cancel the worker thread, and
+    does NOT close the SSE stream. Real exceptions still use the existing
+    ``JobManager._run_job`` catch path (``server/app/jobs.py:343``). This
+    is deliberate — see plan.md "Out of Scope (Follow-ups)" for why
+    auto-cancel on silence is its own separate plan (stuck CUDA kernel,
+    hung socket, and a dead process look identical from inside Python).
 """
 
 from __future__ import annotations
@@ -41,6 +60,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -128,6 +148,159 @@ class _PipelineLogHandler(logging.Handler):
         # `level` is guaranteed to be one of the LogLevel literal members
         # by the mapping above; the type checker still can't prove it.
         self._emit(LogEvent(level=level, message=message, ts=time.time()))  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# _LivenessWatchdog — daemon thread that logs when emit() stops firing.
+#
+# See module docstring for the log-only / no-cancel rationale. Summary:
+# this is defense-in-depth observability. If a stage hangs and the user's
+# browser sees no new SSE frames for >timeout seconds, the watchdog emits
+# an ERROR-level log line via the same ``src`` logger the pipeline itself
+# uses. That record flows through ``_PipelineLogHandler`` → ``LogEvent``
+# → ``<LogPanel>`` automatically, so no new schema or endpoint is needed.
+#
+# Suppression: the watchdog's own error log goes through the wrapped emit
+# (``run_pipeline_job`` instruments ``emit`` to reset ``last_emit_ts``),
+# so after a fire the clock resets and the next fire can only happen
+# after another full timeout window. This produces a ~180s, 360s, 540s
+# cadence for a continuously silent stage instead of spamming every
+# poll-interval tick.
+# ---------------------------------------------------------------------------
+_LIVENESS_ENV_VAR = "PIPELINE_LIVENESS_TIMEOUT_S"
+_LIVENESS_DEFAULT_S = 180.0
+# Poll interval — short enough that the watchdog reacts within a few
+# seconds of crossing the threshold (and stops promptly on ``.stop()``),
+# long enough that the idle CPU cost is negligible.
+_LIVENESS_POLL_INTERVAL_S = 5.0
+
+
+def _read_liveness_timeout() -> float:
+    """Read ``PIPELINE_LIVENESS_TIMEOUT_S`` with a 180s fallback.
+
+    Invalid values (non-numeric, zero, negative) fall back to the default
+    rather than crashing — the watchdog is defensive infrastructure and
+    should never break the pipeline over a typo'd env var.
+    """
+    raw = os.environ.get(_LIVENESS_ENV_VAR)
+    if raw is None:
+        return _LIVENESS_DEFAULT_S
+    try:
+        val = float(raw)
+    except ValueError:
+        logger.warning(
+            "%s=%r is not a number; using default %ss",
+            _LIVENESS_ENV_VAR, raw, _LIVENESS_DEFAULT_S,
+        )
+        return _LIVENESS_DEFAULT_S
+    if val <= 0:
+        logger.warning(
+            "%s=%r must be > 0; using default %ss",
+            _LIVENESS_ENV_VAR, raw, _LIVENESS_DEFAULT_S,
+        )
+        return _LIVENESS_DEFAULT_S
+    return val
+
+
+class _LivenessWatchdog:
+    """Daemon thread that logs when ``emit()`` goes quiet for too long.
+
+    Usage:
+        wd = _LivenessWatchdog(src_logger, timeout_s=180.0)
+        wd.start()
+        try:
+            ...
+            wd.notify()  # call from the wrapped emit closure on every event
+            ...
+        finally:
+            wd.stop()
+
+    The caller is responsible for calling ``notify()`` on every real
+    ``emit()`` so the clock resets. On each poll tick the watchdog
+    computes ``gap = monotonic() - last_emit_ts`` and fires
+    ``src_logger.error(...)`` when ``gap >= timeout_s``. After firing, it
+    waits until the NEXT multiple of ``timeout_s`` before firing again —
+    i.e. at 180s, 360s, 540s silence for the 180s default. This keeps a
+    10-minute hang from spamming the log every 5 seconds.
+    """
+
+    def __init__(
+        self,
+        src_logger: logging.Logger,
+        timeout_s: float,
+        poll_interval_s: float = _LIVENESS_POLL_INTERVAL_S,
+    ):
+        self._logger = src_logger
+        self._timeout_s = timeout_s
+        # Never poll slower than the timeout itself, otherwise a short
+        # timeout (e.g. test config with 1s) could be missed entirely.
+        # The 0.05s floor is a safety net for degenerate direct construction
+        # with timeout_s ~= 0 — `_read_liveness_timeout` already rejects
+        # non-positive env values, so production paths never hit it.
+        self._poll_interval_s = min(poll_interval_s, max(timeout_s / 2, 0.05))
+        self._stop_event = threading.Event()
+        self._last_emit_ts = 0.0  # reseeded in start()
+        # Number of timeout windows we've already logged on the CURRENT
+        # silence streak. Reset by notify(). Lets us suppress repeat fires
+        # within the same window (and produce ~180s / 360s / 540s cadence
+        # instead of one fire every poll tick).
+        self._last_fired_windows = 0
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        # Seed with monotonic() NOW so the first window is sized naturally
+        # — no immediate fire if the pipeline takes longer than the
+        # timeout to reach its first emit (which would be unusual but
+        # correct behavior: watchdog fires even if the first stage hasn't
+        # emitted anything yet).
+        self._last_emit_ts = time.monotonic()
+        self._last_fired_windows = 0
+        self._thread = threading.Thread(
+            target=self._run,
+            name="pipeline-liveness-watchdog",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def notify(self) -> None:
+        """Reset the silence clock. Call on every real emit()."""
+        self._last_emit_ts = time.monotonic()
+        self._last_fired_windows = 0
+
+    def stop(self, timeout: float = 2.0) -> None:
+        """Signal the thread to exit and join it. Idempotent."""
+        self._stop_event.set()
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=timeout)
+        self._thread = None
+
+    def _run(self) -> None:
+        # Poll loop: sleep on the stop Event so .stop() is responsive.
+        # wait() returns True when the event is set, False on timeout.
+        while not self._stop_event.wait(self._poll_interval_s):
+            self._tick()
+
+    def _tick(self) -> None:
+        gap = time.monotonic() - self._last_emit_ts
+        if gap < self._timeout_s:
+            return
+        # How many full timeout windows of silence have we accumulated?
+        # (1 at first threshold crossing, 2 at 2x, etc.)
+        windows = int(gap // self._timeout_s)
+        if windows <= self._last_fired_windows:
+            return
+        # ERROR level so the client renders it red in <LogPanel>.
+        # Message shape is intentionally verbose — this is the primary
+        # signal the user sees for a hung stage. Watchdog must never
+        # crash the job, so any logger exception is swallowed. The
+        # window counter only advances AFTER the log call returns
+        # successfully, so a suppressed logger failure doesn't silently
+        # skip a window (it'd re-fire on the next tick).
+        with contextlib.suppress(Exception):
+            self._logger.error(
+                "no progress for %.0fs — stage may be hung", gap,
+            )
+            self._last_fired_windows = windows
 
 
 def _transcode_to_browser_safe(output_path: Path) -> None:
@@ -357,6 +530,37 @@ def run_pipeline_job(
         target_lang=target_lang,
     )
 
+    # Attach the log bridge. We install on the `src` logger (parent of
+    # `src.pipeline`, `src.stages.*`, etc.) so every pipeline logger in the
+    # tree feeds through it. Ensure INFO propagates: if the parent level is
+    # NOTSET or above INFO, bump it.
+    #
+    # NOTE — we LOWER the level but never restore it. A naive
+    # save-prior-and-restore pattern races under concurrent runs: thread A
+    # saves level L and bumps to INFO; thread B saves INFO (already bumped)
+    # and bumps to INFO; thread A finishes and restores L; thread B finishes
+    # and restores INFO — corrupting the original L. JobManager is
+    # single-worker today, so the race can't fire in practice, but the fix
+    # is cheap: since the only mutation is LOWER to INFO (never raise),
+    # leaving it lowered is always safe. Pipeline logs are the only
+    # consumer of this tree in our process.
+    src_logger = logging.getLogger("src")
+    watchdog = _LivenessWatchdog(src_logger, timeout_s=_read_liveness_timeout())
+
+    # Wrap emit so every call — stage_start / stage_complete / log / done /
+    # error alike — resets the watchdog's silence clock BEFORE forwarding.
+    # Resetting before the underlying emit keeps the semantics correct
+    # even if the caller's emit is slow (we still get credit for the
+    # "something happened" moment at wall-clock fire time). The watchdog's
+    # own error log also flows through _PipelineLogHandler → this wrapped
+    # emit, which naturally resets the clock after a fire and spaces the
+    # next fire a full timeout window later.
+    original_emit = emit
+
+    def emit(event: SSEEvent) -> None:  # noqa: F811 — intentional shadow
+        watchdog.notify()
+        original_emit(event)
+
     # Per-stage start timestamps → duration_ms on completion.
     stage_start_ts: dict[str, float] = {}
 
@@ -384,26 +588,12 @@ def run_pipeline_job(
                 )
             )
 
-    # Attach the log bridge. We install on the `src` logger (parent of
-    # `src.pipeline`, `src.stages.*`, etc.) so every pipeline logger in the
-    # tree feeds through it. Ensure INFO propagates: if the parent level is
-    # NOTSET or above INFO, bump it.
-    #
-    # NOTE — we LOWER the level but never restore it. A naive
-    # save-prior-and-restore pattern races under concurrent runs: thread A
-    # saves level L and bumps to INFO; thread B saves INFO (already bumped)
-    # and bumps to INFO; thread A finishes and restores L; thread B finishes
-    # and restores INFO — corrupting the original L. JobManager is
-    # single-worker today, so the race can't fire in practice, but the fix
-    # is cheap: since the only mutation is LOWER to INFO (never raise),
-    # leaving it lowered is always safe. Pipeline logs are the only
-    # consumer of this tree in our process.
     handler = _PipelineLogHandler(emit)
-    src_logger = logging.getLogger("src")
     src_logger.addHandler(handler)
     if src_logger.level == logging.NOTSET or src_logger.level > logging.INFO:
         src_logger.setLevel(logging.INFO)
 
+    watchdog.start()
     try:
         pipeline = VideoPipeline(config, progress_callback=progress_cb)
         pipeline.run()
@@ -422,4 +612,7 @@ def run_pipeline_job(
     finally:
         # Always detach, even on exception. JobManager handles ErrorEvent.
         # Intentionally no setLevel restore — see note above.
+        # Watchdog stops on BOTH success and exception paths so no daemon
+        # thread outlives the job.
+        watchdog.stop()
         src_logger.removeHandler(handler)

@@ -27,6 +27,7 @@ import { Check, Clock } from "lucide-react";
 
 import type { Stage } from "@/api/schemas";
 import type { StageState } from "@/hooks/useJobStream";
+import { Badge } from "@/components/ui/badge";
 import { STAGES, STAGE_LABEL } from "@/lib/stages";
 import { cn } from "@/lib/utils";
 
@@ -47,6 +48,12 @@ export interface StageProgressProps {
   /** If the pipeline failed, which stage failed. Forces fail styling on that
    *  tile + pending on later tiles. */
   failedStage?: Stage | null;
+  /** How long the active stage has been stalled past the shared
+   *  threshold, in ms. > 0 shows a "stalled" badge on the active tile;
+   *  0 (or omitted) hides it. Derived upstream in `useJobStream`; we
+   *  deliberately don't re-derive from `activeStageElapsedMs` here so
+   *  the threshold stays a single source of truth. */
+  stalledMs?: number;
 }
 
 /** "4200" → "4.2s" */
@@ -57,6 +64,14 @@ function formatDuration(ms: number): string {
 /** Integer-second tick readout. "5000" → "5s" */
 function formatTick(ms: number): string {
   return `${Math.floor(ms / 1000)}s`;
+}
+
+/** Terse readout for the stall badge. Ms floored to whole minutes when
+ *  >=60s, seconds otherwise. "15000" → "15s"; "190000" → "3m". */
+function formatStall(ms: number): string {
+  const totalSec = Math.floor(ms / 1000);
+  if (totalSec < 60) return `${totalSec}s`;
+  return `${Math.floor(totalSec / 60)}m`;
 }
 
 /** "00:42" · "1:23:45" for >=1h. */
@@ -100,6 +115,7 @@ export function StageProgress({
   activeStageElapsedMs,
   currentStage,
   failedStage,
+  stalledMs,
 }: StageProgressProps) {
   // Elapsed-row readout: matches the mockup per phase.
   //   running   → "elapsed MM:SS"                                 (03-running)
@@ -167,6 +183,12 @@ export function StageProgress({
             tickText = formatDuration(duration);
           }
 
+          // Stall badge: only on the currently-active tile, only when
+          // `stalledMs > 0`. Absolutely positioned so it can't push the
+          // other tiles' layouts — the active tile carries the visual
+          // cost (a small pill overlapping its top-right corner) alone.
+          const showStall = isActive && stalledMs !== undefined && stalledMs > 0;
+
           return (
             <li
               key={stage}
@@ -176,7 +198,7 @@ export function StageProgress({
               data-stage={stage}
               data-state={tileState}
               className={cn(
-                "flex min-w-0 flex-1 flex-col items-start gap-1 rounded-md border p-3 transition-colors",
+                "relative flex min-w-0 flex-1 flex-col items-start gap-1 rounded-md border p-3 transition-colors",
                 isPending &&
                   "border-border bg-[color:var(--bg-2)] text-muted-foreground",
                 isActive &&
@@ -209,6 +231,14 @@ export function StageProgress({
                 <span className="font-mono text-[11px] text-muted-foreground">
                   {tickText}
                 </span>
+              )}
+              {showStall && (
+                <Badge
+                  data-testid="stage-stall-badge"
+                  className="absolute -top-2 right-2 border-[color:var(--warn-line)] bg-[color:var(--warn-soft)] px-1.5 py-0 font-mono text-[10px] font-semibold uppercase tracking-wider text-[color:var(--warn)] hover:bg-[color:var(--warn-soft)]"
+                >
+                  stalled {formatStall(stalledMs)}
+                </Badge>
               )}
             </li>
           );

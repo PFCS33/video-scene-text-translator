@@ -186,4 +186,106 @@ describe("<StageProgress>", () => {
     // lives in the StatusBand progress chip, not here.
     expect(screen.getByText(/total 00:12/)).toBeInTheDocument();
   });
+
+  // --------------------------------------------------------------------
+  // Stall badge — rendered on the active tile when `stalledMs > 0`.
+  // The threshold itself lives in `lib/stages.ts`; this component only
+  // trusts the prop. Text must stay queryable (accessible) so screen
+  // readers announce the stall, not a mystery pill.
+  // --------------------------------------------------------------------
+
+  it("does not render the stall badge when stalledMs is 0", () => {
+    render(
+      <StageProgress
+        stages={{ ...ALL_PENDING, s3: "active" }}
+        stageDurations={{}}
+        activeStageElapsedMs={60_000}
+        currentStage="s3"
+        stalledMs={0}
+      />,
+    );
+
+    expect(screen.queryByText(/stalled/i)).toBeNull();
+    expect(screen.queryByTestId("stage-stall-badge")).toBeNull();
+  });
+
+  it("does not render the stall badge when stalledMs is undefined", () => {
+    render(
+      <StageProgress
+        stages={{ ...ALL_PENDING, s3: "active" }}
+        stageDurations={{}}
+        activeStageElapsedMs={60_000}
+        currentStage="s3"
+      />,
+    );
+
+    expect(screen.queryByText(/stalled/i)).toBeNull();
+    expect(screen.queryByTestId("stage-stall-badge")).toBeNull();
+  });
+
+  it("renders the stall badge on the active tile when stalledMs > 0 and it's queryable by accessible text", () => {
+    render(
+      <StageProgress
+        stages={{ ...ALL_PENDING, s1: "done", s2: "done", s3: "active" }}
+        stageDurations={{ s1: 4200, s2: 6100 }}
+        activeStageElapsedMs={220_000}
+        currentStage="s3"
+        stalledMs={40_000}
+      />,
+    );
+
+    // Badge is queryable by its text content (accessibility sanity check).
+    const badge = screen.getByText(/stalled/i);
+    expect(badge).toBeInTheDocument();
+
+    // Sits on the active tile, not on a neighbour.
+    const active = screen.getByRole("status");
+    expect(active).toHaveAttribute("data-stage", "s3");
+    expect(active).toContainElement(badge);
+  });
+
+  it("does not render the stall badge on non-active tiles, even when stalledMs > 0", () => {
+    const { container } = render(
+      <StageProgress
+        stages={{ ...ALL_PENDING, s1: "done", s2: "done", s3: "active" }}
+        stageDurations={{ s1: 4200, s2: 6100 }}
+        activeStageElapsedMs={220_000}
+        currentStage="s3"
+        stalledMs={40_000}
+      />,
+    );
+
+    // Query tiles by the component's `data-stage` attribute — more
+    // robust than role-indexing when a nested primitive (Badge div)
+    // could shift role trees under the hood.
+    for (const code of ["s1", "s2", "s4", "s5"]) {
+      const tile = container.querySelector(`[data-stage="${code}"]`);
+      expect(tile).not.toBeNull();
+      expect(within(tile as HTMLElement).queryByText(/stalled/i)).toBeNull();
+    }
+    const activeTile = container.querySelector('[data-stage="s3"]');
+    expect(activeTile).not.toBeNull();
+    expect(
+      within(activeTile as HTMLElement).getByText(/stalled/i),
+    ).toBeInTheDocument();
+  });
+
+  it("suppresses the stall badge on a failed tile (fail state overrides active)", () => {
+    // Safety rail: if a failure event reached the reducer while the
+    // upstream tick hadn't zeroed `stalledMs` yet, the tile's state is
+    // "fail" (not "active"), so the badge must not render — otherwise
+    // the user sees "stalled" on a clearly-crashed stage.
+    render(
+      <StageProgress
+        stages={{ ...ALL_PENDING, s1: "done", s2: "done", s3: "active" }}
+        stageDurations={{ s1: 4200, s2: 6100, s3: 220_000 }}
+        activeStageElapsedMs={0}
+        currentStage={null}
+        failedStage="s3"
+        stalledMs={40_000}
+      />,
+    );
+
+    expect(screen.queryByText(/stalled/i)).toBeNull();
+  });
 });

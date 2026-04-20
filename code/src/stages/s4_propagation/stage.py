@@ -19,6 +19,7 @@ Two lighting-correction paths are supported:
 from __future__ import annotations
 
 import logging
+import time
 
 import cv2
 import numpy as np
@@ -208,12 +209,27 @@ class PropagationStage:
             disable=inpainter is None,
         )
 
-        for track in tracks:
+        # Heartbeat state — a 30s dwell inside the inner loop triggers an
+        # INFO progress summary. Reports total stage-elapsed (for user
+        # context) and dets_done/total (for rate feedback). Time-based
+        # trigger so slow per-ROI inpaints still surface.
+        heartbeat_interval_s = 30.0
+        t_stage_start = time.monotonic()
+        t_heartbeat_last = t_stage_start
+        dets_done = 0
+
+        for track_idx, track in enumerate(tracks, start=1):
             if track.edited_roi is None:
                 logger.warning(
                     "S4: Track %d has no edited ROI, skipping", track.track_id
                 )
                 continue
+
+            logger.info(
+                "S4: Track %d/%d (id=%d): propagating to %d detections",
+                track_idx, len(tracks), track.track_id, len(track.detections),
+            )
+            t_track_start = time.monotonic()
 
             self.lcm.reset()  # clear EMA buffer between tracks
 
@@ -228,7 +244,23 @@ class PropagationStage:
                 if (inpainter is not None and ref_canonical is not None
                         and ref_canonical.size > 0
                         and ref_det.inpainted_background is None):
-                    ref_det.inpainted_background = inpainter.inpaint(ref_canonical)
+                    # Wrap ref-frame inpaint so a silent hang here is
+                    # visible, and exception context identifies which
+                    # track tripped before the stage error path fires.
+                    t_inpaint_start = time.monotonic()
+                    try:
+                        ref_det.inpainted_background = inpainter.inpaint(
+                            ref_canonical
+                        )
+                    except Exception:
+                        elapsed = time.monotonic() - t_inpaint_start
+                        logger.exception(
+                            "S4: Track %d/%d (id=%d) ref-frame inpaint failed "
+                            "after %.1fs (frame_idx=%d)",
+                            track_idx, len(tracks), track.track_id, elapsed,
+                            track.reference_frame_idx,
+                        )
+                        raise
                 ref_background = ref_det.inpainted_background
 
             # ----- First pass: build per-detection lit ROIs -----
@@ -237,6 +269,7 @@ class PropagationStage:
 
             for frame_idx, det in track.detections.items():
                 pbar.update(1)
+                dets_done += 1
                 frame = frames.get(frame_idx)
                 if frame is None:
                     continue
@@ -248,7 +281,33 @@ class PropagationStage:
                 # Inpaint this detection's background on demand if LCM is on
                 if (inpainter is not None
                         and det.inpainted_background is None):
-                    det.inpainted_background = inpainter.inpaint(target_canonical)
+                    # Wrap per-detection inpaint. Per-ROI detail stays at
+                    # DEBUG to avoid flooding <LogPanel>; the user-visible
+                    # signal is the per-track INFO and the 30s heartbeat.
+                    t_inpaint_start = time.monotonic()
+                    try:
+                        det.inpainted_background = inpainter.inpaint(
+                            target_canonical
+                        )
+                    except Exception:
+                        elapsed = time.monotonic() - t_inpaint_start
+                        logger.exception(
+                            "S4: Track %d/%d (id=%d) per-det inpaint failed "
+                            "after %.1fs (frame_idx=%d)",
+                            track_idx, len(tracks), track.track_id, elapsed,
+                            frame_idx,
+                        )
+                        raise
+
+                # 30s heartbeat inside the inner loop. Time-based trigger
+                # (not frame-count-based) so slow inpaints still surface.
+                now = time.monotonic()
+                if now - t_heartbeat_last >= heartbeat_interval_s:
+                    logger.info(
+                        "S4 inpaint: %d/%d dets, elapsed %.0fs",
+                        dets_done, total_dets, now - t_stage_start,
+                    )
+                    t_heartbeat_last = now
 
                 # Choose LCM if available, else fall back to histogram matching
                 if (self.config.use_lcm
@@ -267,6 +326,11 @@ class PropagationStage:
                 per_det_outputs.append((frame_idx, det, target_canonical, lit_edited))
 
             if not per_det_outputs:
+                logger.info(
+                    "S4: Track %d/%d (id=%d) done in %.1fs (%d outputs)",
+                    track_idx, len(tracks), track.track_id,
+                    time.monotonic() - t_track_start, 0,
+                )
                 continue
 
             # ----- Second pass: optional BPN differential blur -----
@@ -310,6 +374,12 @@ class PropagationStage:
                     ),
                 )
                 propagated.setdefault(frame_idx, []).append(prop_roi)
+
+            logger.info(
+                "S4: Track %d/%d (id=%d) done in %.1fs (%d outputs)",
+                track_idx, len(tracks), track.track_id,
+                time.monotonic() - t_track_start, len(per_det_outputs),
+            )
 
         pbar.close()
         return propagated

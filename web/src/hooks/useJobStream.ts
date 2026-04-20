@@ -45,7 +45,7 @@ import type {
   SSEEvent,
   Stage,
 } from "@/api/schemas";
-import { STAGES } from "@/lib/stages";
+import { STAGES, STALL_THRESHOLD_MS } from "@/lib/stages";
 
 const LOG_CAP = 500;
 
@@ -90,6 +90,19 @@ export interface JobStreamState {
    * error, and unmount. See plan.md D8.
    */
   activeStageElapsedMs: number;
+  /**
+   * How long the active stage has been stalled past
+   * `STALL_THRESHOLD_MS`, in milliseconds. 0 while `activeStageElapsedMs`
+   * is below the threshold, and while no stage is active.
+   *
+   * Derived in the same tick as `activeStageElapsedMs` (one render per
+   * second), then reset alongside it on stage_start / stage_complete /
+   * done / error / status-sync-terminal / reset / unmount. Kept as a
+   * state field (not re-derived in components) so every surface that
+   * wants to show a stall signal reads a single source of truth and
+   * never redefines the threshold. See plan.md Layer 3.
+   */
+  stalledMs: number;
 }
 
 export interface UseJobStreamResult {
@@ -122,6 +135,7 @@ function initialState(): JobStreamState {
     currentStage: null,
     failedStage: null,
     activeStageElapsedMs: 0,
+    stalledMs: 0,
   };
 }
 
@@ -223,10 +237,16 @@ export function useJobStream(jobId: string | null): UseJobStreamResult {
         // anyway, so updating state at sub-second granularity would burn
         // renders without changing the output.
         const elapsed = Math.floor((Date.now() - baseline) / 1000) * 1000;
+        // Stall readout is derived from the same baseline in the same
+        // tick — one render per second covers both fields and keeps the
+        // threshold comparison stable (no boundary flicker, since the
+        // flooring matches `activeStageElapsedMs`).
+        const stalled =
+          elapsed > STALL_THRESHOLD_MS ? elapsed - STALL_THRESHOLD_MS : 0;
         setState((prev) =>
-          prev.activeStageElapsedMs === elapsed
+          prev.activeStageElapsedMs === elapsed && prev.stalledMs === stalled
             ? prev
-            : { ...prev, activeStageElapsedMs: elapsed },
+            : { ...prev, activeStageElapsedMs: elapsed, stalledMs: stalled },
         );
       }, 1000);
     },
@@ -254,8 +274,11 @@ export function useJobStream(jobId: string | null): UseJobStreamResult {
               currentStage: ev.stage,
               // Reset the elapsed readout in the same commit as the stage
               // flip so the UI never shows the previous stage's time on
-              // the new stage's tile.
+              // the new stage's tile. `stalledMs` rides the same reset
+              // so a stall carried over from the previous stage doesn't
+              // flash on the new tile for a tick.
               activeStageElapsedMs: 0,
+              stalledMs: 0,
             };
           case "stage_complete":
             return {
@@ -270,6 +293,8 @@ export function useJobStream(jobId: string | null): UseJobStreamResult {
                 prev.currentStage === ev.stage ? null : prev.currentStage,
               activeStageElapsedMs:
                 prev.currentStage === ev.stage ? 0 : prev.activeStageElapsedMs,
+              stalledMs:
+                prev.currentStage === ev.stage ? 0 : prev.stalledMs,
             };
           case "log": {
             const entry: LogEntry = {
@@ -291,6 +316,7 @@ export function useJobStream(jobId: string | null): UseJobStreamResult {
               outputUrl: ev.output_url,
               currentStage: null,
               activeStageElapsedMs: 0,
+              stalledMs: 0,
             };
           case "error":
             return {
@@ -308,6 +334,7 @@ export function useJobStream(jobId: string | null): UseJobStreamResult {
               failedStage: prev.currentStage ?? prev.failedStage,
               currentStage: null,
               activeStageElapsedMs: 0,
+              stalledMs: 0,
             };
           default:
             return prev;
@@ -359,6 +386,7 @@ export function useJobStream(jobId: string | null): UseJobStreamResult {
             outputUrl: prev.outputUrl ?? outputUrl(status.job_id),
             currentStage: null,
             activeStageElapsedMs: 0,
+            stalledMs: 0,
           };
         }
         if (status.status === "failed") {
@@ -380,6 +408,7 @@ export function useJobStream(jobId: string | null): UseJobStreamResult {
               null,
             currentStage: null,
             activeStageElapsedMs: 0,
+            stalledMs: 0,
           };
         }
         if (status.current_stage) {

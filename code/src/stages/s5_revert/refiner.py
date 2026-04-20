@@ -35,6 +35,7 @@ test in test_s5_revert.py.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 import cv2
@@ -120,8 +121,25 @@ class RefinerInference:
             device_str = "cpu"
         device = torch.device(device_str)
 
-        ckpt = torch.load(
-            self.checkpoint_path, map_location=device, weights_only=False,
+        # Wrap torch.load so a slow/stuck checkpoint read is visible. This
+        # is a one-shot first-call blocker — e.g. a cold disk read on a
+        # large .pt file can silently consume tens of seconds with no
+        # other signal. Re-raise so the normal load-failure path fires.
+        t_load_start = time.monotonic()
+        try:
+            ckpt = torch.load(
+                self.checkpoint_path, map_location=device, weights_only=False,
+            )
+        except Exception:
+            elapsed = time.monotonic() - t_load_start
+            logger.exception(
+                "S5 refiner: torch.load(%s) failed after %.1fs",
+                self.checkpoint_path, elapsed,
+            )
+            raise
+        logger.info(
+            "S5 refiner: loaded %s in %.1fs",
+            self.checkpoint_path, time.monotonic() - t_load_start,
         )
         cfg = ckpt.get("config", {})
         mc = cfg.get("model", {})

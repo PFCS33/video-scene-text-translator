@@ -969,6 +969,7 @@ function ActiveRightColumn({
           activeStageElapsedMs={streamState.activeStageElapsedMs}
           currentStage={streamState.currentStage}
           failedStage={failedStage}
+          stalledMs={streamState.stalledMs}
         />
         {/*
          * LogPanel only renders while the pipeline is streaming
