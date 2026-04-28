@@ -30,6 +30,11 @@ test_output/
 .DS_Store
 Thumbs.db
 
+# Office / drawio scratch files
+~$*.pptx
+~$*.docx
+.$*.drawio*
+
 # Project-specific
 code/debug_output/
 _refs/

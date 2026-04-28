@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Logo concept A: "Video frame with translation mark"
+  A rounded video frame carrying A → 文 — Latin source on the left,
+  CJK glyph (文 = "text") on the right, red arrow between. Film-strip
+  perforations signal video. SFU red (#CC0633).
+-->
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="0 0 500 500"
+     width="500" height="500"
+     font-family="Helvetica, Arial, sans-serif">
+
+  <rect x="40" y="60" width="420" height="320" rx="28" ry="28"
+        fill="#ffffff" stroke="#CC0633" stroke-width="14"/>
+
+  <g fill="#CC0633">
+    <rect x="80"  y="52" width="30" height="16" rx="4"/>
+    <rect x="130" y="52" width="30" height="16" rx="4"/>
+    <rect x="180" y="52" width="30" height="16" rx="4"/>
+    <rect x="230" y="52" width="30" height="16" rx="4"/>
+    <rect x="280" y="52" width="30" height="16" rx="4"/>
+    <rect x="330" y="52" width="30" height="16" rx="4"/>
+    <rect x="380" y="52" width="30" height="16" rx="4"/>
+    <rect x="80"  y="372" width="30" height="16" rx="4"/>
+    <rect x="130" y="372" width="30" height="16" rx="4"/>
+    <rect x="180" y="372" width="30" height="16" rx="4"/>
+    <rect x="230" y="372" width="30" height="16" rx="4"/>
+    <rect x="280" y="372" width="30" height="16" rx="4"/>
+    <rect x="330" y="372" width="30" height="16" rx="4"/>
+    <rect x="380" y="372" width="30" height="16" rx="4"/>
+  </g>
+
+  <text x="140" y="270" text-anchor="middle"
+        font-size="180" font-weight="bold"
+        font-family="Georgia, Times, serif"
+        fill="#2a2a2a">A</text>
+
+  <path d="M 212 210 L 278 210 L 278 198 L 308 220 L 278 242 L 278 230 L 212 230 Z"
+        fill="#CC0633"/>
+
+  <text x="370" y="270" text-anchor="middle"
+        font-size="150" font-weight="bold"
+        font-family="PingFang SC, Noto Sans CJK SC, SimHei, sans-serif"
+        fill="#CC0633">文</text>
+
+  <text x="250" y="445" text-anchor="middle"
+        font-size="30" font-weight="bold" letter-spacing="4"
+        fill="#2a2a2a">CROSS-LANGUAGE SCENE TEXT</text>
+  <text x="250" y="478" text-anchor="middle"
+        font-size="20" font-style="italic"
+        fill="#888">CMPT 743 · SFU Visual Computing Lab II · 2026</text>
+</svg>
