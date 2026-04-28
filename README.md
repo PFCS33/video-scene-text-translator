@@ -1,6 +1,12 @@
 # Cross-Language Scene Text Replacement in Video
 
-CMPT 743 Visual Computing Lab II final project (SFU). Replace scene text in video frames across languages, preserving font style, perspective, and lighting consistency.
+Automatically translate scene text in video frames, preserving font style, perspective, and lighting consistency.
+
+## Demo
+
+<p align="center">
+  <video src="https://github.com/user-attachments/assets/d350ff7c-f3fc-4bfb-95c4-541a5c12cfed" controls autoplay loop muted playsinline width="80%"></video>
+</p>
 
 ## Environment Setup
 
@@ -162,6 +168,10 @@ ruff check .
 ```
 
 ## Web Application
+
+<p align="center">
+  <img src="demo/hero_webui.png" alt="Scene Text Translator web UI" width="80%"/>
+</p>
 
 Browser-based UI for the same pipeline — upload a video, pick source/target
 languages, watch per-stage progress and live logs, download the result.
